@@ -2095,6 +2095,14 @@ ApplicationWindow {
                 Layout.fillWidth: true
             }
 
+            Label {
+                visible: !app.connected
+                text: qsTr("当前未连接，请先在左侧连接设备后再一键发送。")
+                color: window.theme.error
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 Button {
@@ -2176,7 +2184,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Button {
                     text: qsTr("发送")
-                    enabled: window.checkedCount > 0 && !app.oneClickSending
+                    enabled: window.checkedCount > 0 && !app.oneClickSending && app.connected
                     onClicked: {
                         app.setOneClickIntervalMs(intervalSpin.value);
                         app.startOneClickSend();

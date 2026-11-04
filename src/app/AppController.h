@@ -514,6 +514,13 @@ private:
     void sendNextOneClickStep();
     void sendBindingCommand(quint64 bindingId);
     void finishOneClickSend(bool cancelled);
+    // True only when a write would actually reach a peer. Queuing a send on an
+    // unopened/idle transport just bounces back as sendFailed, which used to
+    // leave one-click sending stranded halfway.
+    [[nodiscard]] bool sendReady() const;
+    // Stops a one-click run that cannot continue (disconnect or send failure)
+    // and tells remote clients so their progress UI does not stay busy.
+    void abortOneClickSend(const QString& status);
     void loadOneClickBindings(bool seedDefaults = true);
     void persistOneClickBindings();
     void loadCommandGroups();

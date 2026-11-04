@@ -3229,6 +3229,21 @@ bool AppController::startOneClickSendForGroup(const QString& group, QString* err
         return false;
     }
 
+    // Never arm a run on a transport that cannot carry bytes: the write would
+    // fail immediately and the dialog would sit on "已发送 1/N" forever.
+    if (!sendReady()) {
+        oneClickSteps_.clear();
+        oneClickIndex_ = 0;
+        oneClickStatus_ = (state_ == transport::ConnectionState::Connected)
+            ? QStringLiteral("没有可发送的客户端：请先连接设备")
+            : QStringLiteral("未连接：请先连接设备再一键发送");
+        if (error != nullptr)
+            *error = oneClickStatus_;
+        emit oneClickStateChanged();
+        pushRemoteOneClick(QStringLiteral("idle"));
+        return false;
+    }
+
     auto plan = commandStore_.buildOneClickPlan(oneClickIntervalMs_,
                                                 group.toStdString());
     if (plan.steps.empty()) {
@@ -3262,12 +3277,41 @@ void AppController::sendNextOneClickStep()
         return;
     }
 
+    if (!sendReady()) {
+        abortOneClickSend(QStringLiteral("已中断：连接已断开"));
+        return;
+    }
+
     const auto& step = oneClickSteps_[static_cast<std::size_t>(oneClickIndex_)];
     const QByteArray payload(
         reinterpret_cast<const char*>(step.payload.data()),
         static_cast<int>(step.payload.size()));
-    totalTxBytes_ += static_cast<qulonglong>(payload.size());
+
+    const auto delay = step.delayAfterMs > 0 ? step.delayAfterMs : oneClickIntervalMs_;
+
+    if (payload.isEmpty()) {
+        // transport drops empty writes silently, so counting it as "sent"
+        // would only mislead the progress dialog.
+        ++oneClickIndex_;
+        oneClickStatus_ = QStringLiteral("已跳过 %1/%2（空数据）: %3")
+                              .arg(oneClickIndex_)
+                              .arg(oneClickSteps_.size())
+                              .arg(QString::fromStdString(step.label));
+        emit oneClickStateChanged();
+        pushRemoteOneClick(QStringLiteral("step"));
+        oneClickTimer_.start(delay);
+        return;
+    }
+
     transport_.send(payload);
+
+    // While no worker thread exists yet, sendFailed comes back synchronously
+    // and has already stopped the run. Restarting the timer here would keep
+    // reporting "已发送" for bytes that never left the process.
+    if (!oneClickSending_)
+        return;
+
+    totalTxBytes_ += static_cast<qulonglong>(payload.size());
     emit statsChanged();
 
     ++oneClickIndex_;
@@ -3278,8 +3322,27 @@ void AppController::sendNextOneClickStep()
     emit oneClickStateChanged();
     pushRemoteOneClick(QStringLiteral("step"));
 
-    const auto delay = step.delayAfterMs > 0 ? step.delayAfterMs : oneClickIntervalMs_;
     oneClickTimer_.start(delay);
+}
+
+bool AppController::sendReady() const
+{
+    if (state_ != transport::ConnectionState::Connected)
+        return false;
+    // A listening TCP server reports "connected" but has no peer to write to
+    // until a client joins.
+    if (transportKind_ == 2 && activeClientId_ == 0)
+        return false;
+    return true;
+}
+
+void AppController::abortOneClickSend(const QString& status)
+{
+    oneClickTimer_.stop();
+    oneClickSending_ = false;
+    oneClickStatus_ = status;
+    emit oneClickStateChanged();
+    pushRemoteOneClick(QStringLiteral("cancel"));
 }
 
 void AppController::cancelOneClickSend()
@@ -4309,12 +4372,9 @@ void AppController::onStreamReset(quint64 /*generation*/)
 void AppController::onSendFailed(const QString& message)
 {
     setError(message);
-    if (oneClickSending_) {
-        oneClickTimer_.stop();
-        oneClickSending_ = false;
-        oneClickStatus_ = QStringLiteral("发送失败: %1").arg(message);
-        emit oneClickStateChanged();
-    }
+    if (!oneClickSending_)
+        return;
+    abortOneClickSend(QStringLiteral("发送失败：%1").arg(message));
 }
 
 void AppController::onErrorOccurred(const QString& message)
@@ -4817,6 +4877,15 @@ void AppController::onRemoteOneClick(quint64 session, const QString& group, int 
     }
     if (intervalMs > 0)
         setOneClickIntervalMs(intervalMs);
+
+    // The PC has nowhere to write yet. startOneClickSendForGroup refuses the
+    // run and broadcasts phase=idle, which unlocks the phone's progress UI.
+    if (!sendReady()) {
+        QString reason;
+        (void)startOneClickSendForGroup(target, &reason);
+        remote_.sendError(session, QStringLiteral("not_connected"), reason);
+        return;
+    }
 
     QString error;
     if (!startOneClickSendForGroup(target, &error) && !error.isEmpty())

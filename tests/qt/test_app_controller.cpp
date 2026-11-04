@@ -29,6 +29,8 @@ private slots:
     void cleanupTestCase();
     void uiPresetsAreCallableByName();
     void oneClickSendsRealTemplatesOverTcp();
+    void oneClickWhileDisconnectedFailsFast();
+    void oneClickWithoutPeerIsRefused();
     void sliderValueSendsLiveCommand();
     void sendFileTransmitsFileContents();
     void receiveHexAndTimestampModes();
@@ -123,6 +125,47 @@ void TestAppController::oneClickSendsRealTemplatesOverTcp()
 
     // The default "speed" slider is excluded from one-click sending.
     QVERIFY(!received.contains("speed"));
+
+    controller.closeTransport();
+}
+
+void TestAppController::oneClickWhileDisconnectedFailsFast()
+{
+    // Regression: with no transport open, startOneClickSend() used to arm the
+    // run anyway. sendFailed came back synchronously, the step was still
+    // counted, and the dialog stayed on "已发送 1/3" with no way forward.
+    AppController controller;
+    QCOMPARE(controller.connectionState(), QStringLiteral("未连接"));
+
+    controller.setOneClickIntervalMs(10);
+    controller.startOneClickSend();
+
+    QVERIFY(!controller.oneClickSending());
+    QCOMPARE(controller.oneClickSent(), 0);
+    QCOMPARE(controller.oneClickTotal(), 0);
+    QVERIFY(controller.oneClickStatus().contains(QStringLiteral("未连接")));
+
+    // Nothing may resume the run behind our back.
+    QTest::qWait(150);
+    QVERIFY(!controller.oneClickSending());
+    QCOMPARE(controller.oneClickSent(), 0);
+}
+
+void TestAppController::oneClickWithoutPeerIsRefused()
+{
+    // A listening TCP server is "connected" but has no peer to write to.
+    AppController controller;
+    controller.openTcpServer(0);
+    QTRY_VERIFY_WITH_TIMEOUT(controller.connectionState().startsWith(QStringLiteral("监听中")),
+                             3000);
+
+    controller.setOneClickIntervalMs(10);
+    controller.startOneClickSend();
+
+    QVERIFY(!controller.oneClickSending());
+    QCOMPARE(controller.oneClickSent(), 0);
+    QCOMPARE(controller.oneClickTotal(), 0);
+    QVERIFY(controller.oneClickStatus().contains(QStringLiteral("客户端")));
 
     controller.closeTransport();
 }
