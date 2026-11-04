@@ -472,16 +472,23 @@ void TestRemote::controllerSyncsRemoteInclusion()
         {QStringLiteral("clientId"), QStringLiteral("phone-inc")},
     });
 
+    // 设置是持久化的，前面用例留下的绑定也会出现在 state 里，所以按 label 找自己那条。
     const auto state = client.waitFor(QStringLiteral("state"));
     QVERIFY(!state.isEmpty());
-    const auto controls = state.value(QStringLiteral("controls")).toArray();
-    QVERIFY(!controls.isEmpty());
-    const auto controlId = static_cast<quint64>(
-        controls.at(0).toObject().value(QStringLiteral("id")).toDouble());
-
-    bool included = false;
-    QVERIFY(controlIncluded(state, controlId, &included));
-    QCOMPARE(included, true);
+    quint64 controlId = 0;
+    double initialValue = 0.0;
+    bool initialIncluded = false;
+    for (const auto& entry : state.value(QStringLiteral("controls")).toArray()) {
+        const auto item = entry.toObject();
+        if (item.value(QStringLiteral("label")).toString() == QStringLiteral("incKp")) {
+            controlId = static_cast<quint64>(item.value(QStringLiteral("id")).toDouble());
+            initialValue = item.value(QStringLiteral("v")).toDouble();
+            initialIncluded = item.value(QStringLiteral("inc")).toBool();
+            break;
+        }
+    }
+    QVERIFY(controlId != 0);
+    QCOMPARE(initialIncluded, true);
 
     // 手机取消「参与一键发送数据」：PC 要按新的计划重发 state。
     client.send(QJsonObject {
@@ -490,6 +497,7 @@ void TestRemote::controllerSyncsRemoteInclusion()
         {QStringLiteral("inc"), false},
     });
 
+    bool included = true;
     const auto afterOff = client.waitFor(QStringLiteral("state"));
     QVERIFY(!afterOff.isEmpty());
     QVERIFY(controlIncluded(afterOff, controlId, &included));
@@ -509,7 +517,7 @@ void TestRemote::controllerSyncsRemoteInclusion()
     for (const auto& entry : afterOn.value(QStringLiteral("controls")).toArray()) {
         const auto item = entry.toObject();
         if (static_cast<quint64>(item.value(QStringLiteral("id")).toDouble()) == controlId)
-            QCOMPARE(item.value(QStringLiteral("v")).toDouble(), 2.5);
+            QCOMPARE(item.value(QStringLiteral("v")).toDouble(), initialValue);
     }
 
     // 不存在的控件要报错，不能静默吞掉。
