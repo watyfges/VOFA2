@@ -30,6 +30,7 @@ class AppController final : public QObject {
     Q_OBJECT
 
     Q_PROPERTY(QString connectionState READ connectionState NOTIFY connectionStateChanged)
+    Q_PROPERTY(QString appVersion READ appVersion CONSTANT)
     Q_PROPERTY(bool connected READ connected NOTIFY connectionStateChanged)
     Q_PROPERTY(bool autoReconnect READ autoReconnect WRITE setAutoReconnect
                    NOTIFY autoReconnectChanged)
@@ -152,6 +153,10 @@ public:
     ~AppController() override;
 
     [[nodiscard]] QString connectionState() const;
+    [[nodiscard]] QString appVersion() const
+    {
+        return QStringLiteral(VOFA_VERSION_STRING);
+    }
     [[nodiscard]] bool connected() const
     {
         return state_ == transport::ConnectionState::Opening

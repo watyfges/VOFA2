@@ -10,7 +10,7 @@ ApplicationWindow {
     minimumWidth: Math.min(1040, Screen.width - 24)
     minimumHeight: Math.min(640, Screen.height - 48)
     visible: true
-    title: qsTr("VOFA2")
+    title: qsTr("VOFA2 %1").arg(app.appVersion)
 
     // Font is the primary metric driver: all Controls and Labels inherit it,
     // so a density-preset switch visibly changes text and control heights.

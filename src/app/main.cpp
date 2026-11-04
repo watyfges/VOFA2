@@ -214,7 +214,8 @@ int main(int argc, char* argv[])
     }
 
     vofa::app::installFileLogger(controller.configDir());
-    qInfo().noquote() << "VOFA2 start, config dir:" << controller.configDir();
+    qInfo().noquote() << "VOFA2" << VOFA_VERSION_STRING << "start, config dir:"
+                      << controller.configDir();
 #ifdef Q_OS_WIN
     g_dumpDir = controller.configDir() + QStringLiteral("/dumps");
     SetUnhandledExceptionFilter(vofaCrashHandler);

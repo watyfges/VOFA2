@@ -1,8 +1,7 @@
 name: Build & Release
 
-# 每次推送到 main 都会重新构建，并把产物覆盖到滚动 Release（tag: latest）；
-# 推 v* 标签则发布正式 Release。下载地址固定不变，历史构建可从 Actions 的
-# artifact 里取（保留 14 天）。
+# 每次推送到 main 都会自动构建并发布一个新版本（tag = v0.1.<运行序号>，
+# 资产名带版本号，链接随版本变化）；推 v* 标签则用标签本身当版本号发布。
 on:
   push:
     branches: [main]
@@ -31,6 +30,23 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          # 版本号：推 vX.Y.Z 标签就用标签；主分支用运行序号当 patch，
+          # 保证「每次提交 = 一个新版本 = 一个独立 Release」。
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $version = $env:GITHUB_REF.Substring('refs/tags/v'.Length)
+          } else {
+            $version = "0.1.$env:GITHUB_RUN_NUMBER"
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "版本号格式不合法: $version" }
+
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "version = $version"
 
       - name: Install Qt ${{ env.QT_VERSION }} (MinGW)
         uses: jurplel/install-qt-action@v4
@@ -78,6 +94,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
             -DCMAKE_C_COMPILER="$env:MINGW_BIN\gcc.exe" `
             -DCMAKE_CXX_COMPILER="$env:MINGW_BIN\g++.exe" `
+            -DVOFA_VERSION="$env:APP_VERSION" `
             -DVOFA_BUILD_APP=ON `
             -DVOFA_BUILD_TESTS=ON `
             -DVOFA_BUILD_BENCH=OFF
@@ -150,8 +167,9 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          Compress-Archive -Path dist\* -DestinationPath VOFA2-win64.zip -Force
-          Write-Host "zip: $([math]::Round((Get-Item VOFA2-win64.zip).Length / 1MB, 1)) MB"
+          $zip = "VOFA2-$env:APP_VERSION-win64.zip"
+          Compress-Archive -Path dist\* -DestinationPath $zip -Force
+          Write-Host "$zip : $([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB"
 
       - name: Build installer (Inno Setup)
         shell: pwsh
@@ -161,11 +179,12 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { $iscc = "$env:ProgramFiles\Inno Setup 6\ISCC.exe" }
           if (-not (Test-Path $iscc)) { throw 'ISCC.exe not found' }
-          & $iscc installer\vofa2.iss
+          & $iscc "/DMyAppVersion=$env:APP_VERSION" installer\vofa2.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
-          Get-ChildItem installer\output\*-setup.exe |
-            Select-Object -First 1 |
-            Copy-Item -Destination VOFA2-setup.exe -Force
+
+          $built = Get-ChildItem installer\output\*-setup.exe | Select-Object -First 1
+          $built | Copy-Item -Destination "VOFA2-$env:APP_VERSION-setup.exe" -Force
+          Write-Host "installer: $($built.Name) -> VOFA2-$env:APP_VERSION-setup.exe"
 
       - name: Compose release notes
         shell: pwsh
@@ -180,13 +199,14 @@ jobs:
           $subject = (git log -1 --pretty=%s)
           $actor = '${{ github.actor }}'
           $qt = '${{ env.QT_VERSION }}'
+          $version = $env:APP_VERSION
 
           if ('${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true') {
-            $head = "**${{ github.ref_name }}** — 正式版本"
-            $foot = '> 正式版本发布，资产一般不再变化。'
+            $head = "**VOFA2 $version** — 正式版本（由标签 ${{ github.ref_name }} 触发）"
+            $foot = '> 这是打标签的正式版本，资产不再变化。'
           } else {
-            $head = '**滚动构建 (latest)** — 每次推送到 main 都会重新构建并覆盖本页资产'
-            $foot = "> 下载链接恒定不变。需要历史构建请到 [Actions](https://github.com/$repo/actions/workflows/build.yml) 下载对应的 artifact（保留 14 天）。"
+            $head = "**VOFA2 $version** — 由 main 分支提交 $short 自动构建"
+            $foot = "> 每次提交都会产生一个新版本号和一个独立 Release，旧版本仍然可下载。历史工作流日志见 [Actions](https://github.com/$repo/actions/workflows/build.yml)（artifact 保留 14 天）。"
           }
 
           # 用数组 + join 拼正文，不依赖 here-string 的换行处理。
@@ -195,6 +215,7 @@ jobs:
             ''
             '| 项目 | 值 |'
             '| --- | --- |'
+            "| 版本 | $version |"
             "| 提交 | [$short](https://github.com/$repo/commit/$sha) |"
             "| 提交说明 | $subject |"
             "| 触发者 | @$actor |"
@@ -202,10 +223,12 @@ jobs:
             ''
             '## 下载'
             ''
-            '- **VOFA2-win64.zip** — 免安装便携版。解压后双击 `vofa2_app.exe` 即可；'
+            "- **VOFA2-$version-win64.zip** — 免安装便携版。解压后双击 ``vofa2_app.exe`` 即可；"
             '  想让配置随目录走（U 盘、绿色版），在 exe 同级放一个空文件 `portable`。'
-            '- **VOFA2-setup.exe** — 安装包，按当前用户安装，不需要管理员权限。'
+            "- **VOFA2-$version-setup.exe** — 安装包，按当前用户安装，不需要管理员权限。"
             '  若本次构建 Inno Setup 出错，则只有 zip。'
+            ''
+            '启动后标题栏与日志里都能看到版本号，便于确认手上跑的是哪一版。'
             ''
             $foot
           )
@@ -215,36 +238,23 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: VOFA2-${{ github.sha }}
+          name: VOFA2-${{ steps.ver.outputs.version }}
           if-no-files-found: error
           retention-days: 14
           path: |
-            VOFA2-win64.zip
-            VOFA2-setup.exe
-
-      - name: Drop stale installer asset
-        # 这次没产出安装包时，把滚动 Release 里上一次的旧安装包删掉，
-        # 免得「新 zip + 旧 exe」被误当成同一次构建。
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        continue-on-error: true
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if (-not (Test-Path VOFA2-setup.exe)) {
-            gh release delete-asset latest VOFA2-setup.exe --yes
-          }
+            VOFA2-${{ steps.ver.outputs.version }}-win64.zip
+            VOFA2-${{ steps.ver.outputs.version }}-setup.exe
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          # 普通提交写滚动更新的 latest；推 v* 标签则走正式版本。
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest' }}
-          name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '最新构建 (latest)' }}
-          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-          make_latest: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          # 每个版本号一个独立 Release，资产名带版本号，下载链接随版本变化。
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: VOFA2 ${{ steps.ver.outputs.version }}
+          prerelease: false
+          make_latest: true
           fail_on_unmatched_files: false
           body_path: release_body.md
           files: |
-            VOFA2-win64.zip
-            VOFA2-setup.exe
+            VOFA2-${{ steps.ver.outputs.version }}-win64.zip
+            VOFA2-${{ steps.ver.outputs.version }}-setup.exe

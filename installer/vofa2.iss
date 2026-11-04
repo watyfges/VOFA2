@@ -1,5 +1,8 @@
 #define MyAppName "VOFA2"
-#define MyAppVersion "0.1.0"
+; 版本号由构建传入：ISCC /DMyAppVersion=0.1.7。本地直接编译时用下面的默认值。
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.0"
+#endif
 #define MyAppExeName "vofa2_app.exe"
 
 [Setup]

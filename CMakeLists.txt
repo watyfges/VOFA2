@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.20)
 
 project(vofa2 VERSION 0.1.0 LANGUAGES CXX)
 
+# 应用版本号：默认取 project() 的版本，CI 每次构建用 -DVOFA_VERSION=x.y.z 覆盖，
+# 从而让 exe 资源、界面标题、安装包和 Release 资产名保持同一个版本。
+set(VOFA_VERSION "${PROJECT_VERSION}" CACHE STRING "Application version (x.y.z)")
+if(NOT VOFA_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(WARNING "VOFA_VERSION='${VOFA_VERSION}' 不是 x.y.z 形式，回退到 ${PROJECT_VERSION}")
+    set(VOFA_VERSION "${PROJECT_VERSION}")
+endif()
+message(STATUS "VOFA2 version: ${VOFA_VERSION}")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
