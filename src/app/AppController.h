@@ -597,6 +597,7 @@ private:
                        bool commit,
                        bool exact);
     void onRemoteAction(quint64 session, quint64 actionId, bool on, bool trigger);
+    void onRemoteInclusion(quint64 session, quint64 bindingId, bool included);
     void onRemoteOneClick(quint64 session, const QString& group, int intervalMs);
 
     struct ChannelConfig {

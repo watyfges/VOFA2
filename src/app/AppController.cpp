@@ -366,6 +366,10 @@ AppController::AppController(QObject* parent)
             [this](quint64 session, quint64 actionId, bool on, bool trigger) {
                 onRemoteAction(session, actionId, on, trigger);
             });
+    connect(&remote_, &remote::RemoteControlServer::inclusionRequested, this,
+            [this](quint64 session, quint64 bindingId, bool included) {
+                onRemoteInclusion(session, bindingId, included);
+            });
     connect(&remote_, &remote::RemoteControlServer::oneClickRequested, this,
             [this](quint64 session, const QString& group, int intervalMs) {
                 onRemoteOneClick(session, group, intervalMs);
@@ -4860,6 +4864,23 @@ void AppController::onRemoteAction(quint64 session,
     } else {
         triggerActionFrom(actionId, actor);
     }
+}
+
+void AppController::onRemoteInclusion(quint64 session, quint64 bindingId, bool included)
+{
+    if (commandStore_.findBinding(bindingId) == nullptr) {
+        remote_.sendError(session, QStringLiteral("unknown_control"),
+                          QStringLiteral("控件不存在或已被删除"));
+        return;
+    }
+
+    // Same code path the PC checkbox uses, so the saved settings and the
+    // one-click plan stay consistent no matter which side ticked it.
+    // rebuildOneClickBindings() also emits oneClickBindingsChanged (PC list
+    // refreshes) and schedules a full state push (phones refresh).
+    commandStore_.setBindingIncluded(bindingId, included);
+    rebuildOneClickBindings();
+    persistOneClickBindings();
 }
 
 void AppController::onRemoteOneClick(quint64 session, const QString& group, int intervalMs)

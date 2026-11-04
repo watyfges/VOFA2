@@ -339,6 +339,9 @@ void RemoteControlServer::onClientMessage(quint64 session, const QByteArray& pay
     case ClientMessageType::Action:
         emit actionRequested(session, message.id, message.on, message.trigger);
         break;
+    case ClientMessageType::Inclusion:
+        emit inclusionRequested(session, message.id, message.included);
+        break;
     case ClientMessageType::OneClick:
         emit oneClickRequested(session, message.group, message.intervalMs);
         break;

@@ -122,6 +122,23 @@ ClientMessage parseClientMessage(const QByteArray& payload)
         return message;
     }
 
+    if (type == QLatin1String("inc")) {
+        message.type = ClientMessageType::Inclusion;
+        if (!readId(root.value(QLatin1String("id")), message.id)) {
+            message.type = ClientMessageType::Unknown;
+            message.error = QStringLiteral("控件 id 无效");
+            return message;
+        }
+        const auto included = root.value(QLatin1String("inc"));
+        if (!included.isBool()) {
+            message.type = ClientMessageType::Unknown;
+            message.error = QStringLiteral("inc 必须是 true 或 false");
+            return message;
+        }
+        message.included = included.toBool();
+        return message;
+    }
+
     if (type == QLatin1String("action")) {
         message.type = ClientMessageType::Action;
         if (!readId(root.value(QLatin1String("id")), message.id)) {

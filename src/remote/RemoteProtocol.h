@@ -89,6 +89,8 @@ enum class ClientMessageType {
     OneClickStop,
     Sync,
     Ping,
+    // Toggle "参与一键发送数据" (`controls[].inc`) from a phone.
+    Inclusion,
 };
 
 struct ClientMessage {
@@ -112,6 +114,9 @@ struct ClientMessage {
     // oneclick
     QString group;
     int intervalMs = 0;
+
+    // inc
+    bool included = false;
 };
 
 // Returns Unknown with `error` set when the payload is not a usable message.

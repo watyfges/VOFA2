@@ -26,6 +26,24 @@ using remote::RemoteControlServer;
 
 using namespace remotetest;
 
+namespace {
+
+// Reads `controls[].inc` for one id out of a `state` message.
+bool controlIncluded(const QJsonObject& state, quint64 id, bool* included)
+{
+    for (const auto& entry : state.value(QStringLiteral("controls")).toArray()) {
+        const auto item = entry.toObject();
+        if (static_cast<quint64>(item.value(QStringLiteral("id")).toDouble()) == id) {
+            if (included != nullptr)
+                *included = item.value(QStringLiteral("inc")).toBool();
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 
 class TestRemote : public QObject {
     Q_OBJECT
@@ -41,6 +59,7 @@ private slots:
     void discoveryResponds();
     void controllerSyncsRemoteValue();
     void controllerSyncsRemoteAction();
+    void controllerSyncsRemoteInclusion();
     void kickDropsTheClient();
 };
 
@@ -426,6 +445,78 @@ void TestRemote::controllerSyncsRemoteAction()
         {QStringLiteral("t"), QStringLiteral("value")},
         {QStringLiteral("id"), 999999},
         {QStringLiteral("v"), 1.0},
+    });
+    const auto failure = client.waitFor(QStringLiteral("error"));
+    QVERIFY(!failure.isEmpty());
+    QCOMPARE(failure.value(QStringLiteral("code")).toString(),
+             QStringLiteral("unknown_control"));
+}
+
+void TestRemote::controllerSyncsRemoteInclusion()
+{
+    const auto port = freePort();
+    QVERIFY(port != 0);
+
+    app::AppController controller;
+    QVERIFY(controller.addOneClickBinding(QStringLiteral("incKp"),
+                                          QStringLiteral("incKp%.3f"),
+                                          0.0, 10.0, 0.01, 2.5, true,
+                                          QStringLiteral("默认")));
+    controller.setRemotePort(port);
+    controller.setRemoteEnabled(true);
+
+    WsClient client;
+    QVERIFY(client.open(port));
+    client.send(QJsonObject {
+        {QStringLiteral("t"), QStringLiteral("hello")},
+        {QStringLiteral("clientId"), QStringLiteral("phone-inc")},
+    });
+
+    const auto state = client.waitFor(QStringLiteral("state"));
+    QVERIFY(!state.isEmpty());
+    const auto controls = state.value(QStringLiteral("controls")).toArray();
+    QVERIFY(!controls.isEmpty());
+    const auto controlId = static_cast<quint64>(
+        controls.at(0).toObject().value(QStringLiteral("id")).toDouble());
+
+    bool included = false;
+    QVERIFY(controlIncluded(state, controlId, &included));
+    QCOMPARE(included, true);
+
+    // 手机取消「参与一键发送数据」：PC 要按新的计划重发 state。
+    client.send(QJsonObject {
+        {QStringLiteral("t"), QStringLiteral("inc")},
+        {QStringLiteral("id"), static_cast<double>(controlId)},
+        {QStringLiteral("inc"), false},
+    });
+
+    const auto afterOff = client.waitFor(QStringLiteral("state"));
+    QVERIFY(!afterOff.isEmpty());
+    QVERIFY(controlIncluded(afterOff, controlId, &included));
+    QCOMPARE(included, false);
+
+    // 再勾回来，值不能被顺手改掉。
+    client.send(QJsonObject {
+        {QStringLiteral("t"), QStringLiteral("inc")},
+        {QStringLiteral("id"), static_cast<double>(controlId)},
+        {QStringLiteral("inc"), true},
+    });
+
+    const auto afterOn = client.waitFor(QStringLiteral("state"));
+    QVERIFY(!afterOn.isEmpty());
+    QVERIFY(controlIncluded(afterOn, controlId, &included));
+    QCOMPARE(included, true);
+    for (const auto& entry : afterOn.value(QStringLiteral("controls")).toArray()) {
+        const auto item = entry.toObject();
+        if (static_cast<quint64>(item.value(QStringLiteral("id")).toDouble()) == controlId)
+            QCOMPARE(item.value(QStringLiteral("v")).toDouble(), 2.5);
+    }
+
+    // 不存在的控件要报错，不能静默吞掉。
+    client.send(QJsonObject {
+        {QStringLiteral("t"), QStringLiteral("inc")},
+        {QStringLiteral("id"), 999999},
+        {QStringLiteral("inc"), false},
     });
     const auto failure = client.waitFor(QStringLiteral("error"));
     QVERIFY(!failure.isEmpty());
