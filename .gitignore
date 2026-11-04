@@ -1,0 +1,33 @@
+# Build outputs
+build/
+build-*/
+/dist/
+/installer/output/
+/installer/test-install/
+
+# Local verification output
+/artifacts/
+
+# Release archives (uploaded as GitHub release assets)
+/*.zip
+/*.exe
+
+# Third-party reference binaries / reverse-engineering artifacts
+/vofa+_1.4.4-1_win64/
+/逐飞助手V1.2.7.exe
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.user
+*.dmp
+*.obj
+*.pdb
+*.log
+
+# CMake
+CMakeUserPresets.json
+
+# Python cache
+__pycache__/
+*.pyc

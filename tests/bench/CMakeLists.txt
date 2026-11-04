@@ -1,0 +1,5 @@
+add_executable(vofa_parse_bench parse_bench.cpp)
+target_link_libraries(vofa_parse_bench PRIVATE vofa_protocol)
+
+add_executable(vofa_waveform_bench waveform_bench.cpp)
+target_link_libraries(vofa_waveform_bench PRIVATE vofa_data)
