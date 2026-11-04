@@ -49,6 +49,7 @@ if(VOFA_BUILD_APP)
     )
     qt_standard_project_setup()
 
+    add_subdirectory(src/remote)
     add_subdirectory(src/transport)
     add_subdirectory(src/app)
 

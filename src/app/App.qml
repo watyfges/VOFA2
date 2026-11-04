@@ -486,6 +486,21 @@ ApplicationWindow {
             }
 
             Button {
+                id: remoteButton
+                text: qsTr("远程调参")
+                onClicked: remoteDialog.open()
+            }
+
+            Label {
+                visible: app.remoteEnabled
+                text: app.remoteClientCount > 0
+                      ? qsTr("%1 台在线").arg(app.remoteClientCount)
+                      : qsTr("等待手机")
+                color: app.remoteClientCount > 0 ? window.theme.accent : window.theme.tip
+                font.bold: app.remoteClientCount > 0
+            }
+
+            Button {
                 id: moreButton
                 text: qsTr("更多")
                 onClicked: moreMenu.open()
@@ -500,6 +515,10 @@ ApplicationWindow {
                     MenuItem {
                         text: qsTr("显示参数/命令栏")
                         onTriggered: app.showSliderPanel = true
+                    }
+                    MenuItem {
+                        text: qsTr("远程调参（手机）…")
+                        onTriggered: remoteDialog.open()
                     }
                     MenuItem {
                         text: qsTr("导入旧命令")
@@ -1919,6 +1938,9 @@ ApplicationWindow {
         function onSendOnMoveChanged() {
             sendOnMoveBox.checked = app.sendOnMove;
         }
+        function onRemoteChanged() {
+            remoteEnableBox.checked = app.remoteEnabled;
+        }
         function onTransportKindChanged() {
             window.transportIndex = app.transportKind;
             transportCombo.currentIndex = app.transportKind;
@@ -1998,6 +2020,9 @@ ApplicationWindow {
             }
             else if (name === "filter") {
                 filterDialog.open();
+            }
+            else if (name === "remote") {
+                remoteDialog.open();
             }
         }
     }
@@ -2156,6 +2181,176 @@ ApplicationWindow {
                 Button {
                     text: qsTr("关闭")
                     onClicked: sendDialog.close()
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: remoteDialog
+        title: qsTr("远程调参（手机局域网）")
+        modal: true
+        width: Math.min(window.dp(580), Screen.width - 40)
+        parent: Overlay.overlay
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round((parent.height - height) / 2)
+
+        // Only refresh the text fields when the dialog opens, so a status
+        // broadcast cannot overwrite what the user is typing.
+        onOpened: {
+            remoteNameField.text = app.remoteServerName;
+            remotePortSpin.value = app.remotePort;
+            remotePinField.text = app.remotePin;
+        }
+
+        contentItem: ColumnLayout {
+            spacing: window.dp(8)
+
+            RowLayout {
+                Layout.fillWidth: true
+
+                CheckBox {
+                    id: remoteEnableBox
+                    text: qsTr("启用远程调参服务")
+                    checked: app.remoteEnabled
+                    onToggled: app.setRemoteEnabled(checked)
+                }
+                Item { Layout.fillWidth: true }
+                Label {
+                    text: qsTr("在线 %1 台").arg(app.remoteClientCount)
+                    color: app.remoteClientCount > 0 ? window.theme.accent
+                                                     : window.theme.tip
+                    font.bold: app.remoteClientCount > 0
+                }
+            }
+
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 2
+                columnSpacing: window.dp(8)
+                rowSpacing: window.dp(6)
+                enabled: app.remoteEnabled
+
+                Label { text: qsTr("本机名称") }
+                TextField {
+                    id: remoteNameField
+                    Layout.fillWidth: true
+                    maximumLength: 64
+                    placeholderText: qsTr("手机会显示这个名称")
+                    onEditingFinished: app.setRemoteServerName(text)
+                }
+
+                Label { text: qsTr("端口") }
+                SpinBox {
+                    id: remotePortSpin
+                    from: 1024
+                    to: 65535
+                    editable: true
+                    // Ports must not be rendered with thousands separators.
+                    textFromValue: function(value) { return value.toString(); }
+                    valueFromText: function(text) {
+                        return parseInt(text.replace(/,/g, "")) || 47900;
+                    }
+                    onValueModified: app.setRemotePort(value)
+                }
+
+                Label { text: qsTr("访问码") }
+                TextField {
+                    id: remotePinField
+                    Layout.fillWidth: true
+                    maximumLength: 12
+                    placeholderText: qsTr("留空表示手机可直接连接")
+                    onEditingFinished: app.setRemotePin(text)
+                }
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: app.remoteStatus
+                wrapMode: Text.WordWrap
+                color: app.remoteEnabled ? window.theme.text : window.theme.tip
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: window.dp(2)
+                visible: app.remoteEnabled && app.remoteAddresses.length > 0
+
+                Label {
+                    text: qsTr("手机连接地址")
+                    color: window.theme.tip
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: app.remoteAddresses.join("\n")
+                    font.family: "monospace"
+                    wrapMode: Text.WrapAnywhere
+                }
+            }
+
+            Frame {
+                Layout.fillWidth: true
+                Layout.preferredHeight: window.dp(120)
+                visible: app.remoteEnabled
+
+                Label {
+                    anchors.centerIn: parent
+                    visible: app.remoteClients.length === 0
+                    text: qsTr("等待手机连接…")
+                    color: window.theme.tip
+                }
+
+                ListView {
+                    id: remoteClientView
+                    anchors.fill: parent
+                    clip: true
+                    spacing: window.dp(2)
+                    // Index the array directly: named roles are not exposed for
+                    // a QVariantList of maps, so `model.name` would be empty.
+                    model: app.remoteClients.length
+
+                    delegate: RowLayout {
+                        id: remoteClientRow
+                        width: remoteClientView.width
+                        spacing: window.dp(6)
+                        readonly property var entry: app.remoteClients[index] || ({})
+
+                        Label {
+                            text: remoteClientRow.entry.name || ""
+                            font.bold: true
+                        }
+                        Label {
+                            text: remoteClientRow.entry.address || ""
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                            color: window.theme.tip
+                        }
+                        Label {
+                            text: remoteClientRow.entry.since || ""
+                            color: window.theme.tip
+                        }
+                        Button {
+                            text: qsTr("断开")
+                            Layout.preferredWidth: window.dp(56)
+                            onClicked: app.kickRemoteClient(remoteClientRow.entry.id)
+                        }
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("手机只能操作滑块数值、开关、命令按钮和一键发送，"
+                               + "不能新增或修改命令。")
+                    wrapMode: Text.WordWrap
+                    color: window.theme.tip
+                }
+                Button {
+                    text: qsTr("关闭")
+                    onClicked: remoteDialog.close()
                 }
             }
         }

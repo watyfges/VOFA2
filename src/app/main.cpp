@@ -254,6 +254,8 @@ int main(int argc, char* argv[])
     int tcpServerPort = -1;
     QString tcpClient;
     bool autoOneClick = false;
+    bool remoteServer = false;
+    int remotePortArg = -1;
     bool uiCycle = false;
     bool demoSource = false;
     bool screenshotQuit = false;
@@ -291,6 +293,12 @@ int main(int argc, char* argv[])
             tcpClient = arguments[++i];
         } else if (arguments[i] == QStringLiteral("--auto-one-click")) {
             autoOneClick = true;
+        } else if (arguments[i] == QStringLiteral("--remote")) {
+            remoteServer = true;
+        } else if (arguments[i] == QStringLiteral("--remote-port")
+                   && i + 1 < arguments.size()) {
+            remoteServer = true;
+            remotePortArg = arguments[++i].toInt();
         } else if (arguments[i] == QStringLiteral("--ui-preset")
                    && i + 1 < arguments.size()) {
             uiPreset = arguments[++i].toInt();
@@ -498,6 +506,12 @@ int main(int argc, char* argv[])
         QTimer::singleShot(1500, &controller, [&controller]() {
             controller.startOneClickSend();
         });
+    }
+
+    if (remoteServer) {
+        if (remotePortArg > 0)
+            controller.setRemotePort(remotePortArg);
+        controller.setRemoteEnabled(true);
     }
 
     if (!openDialog.isEmpty()) {

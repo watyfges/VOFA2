@@ -31,3 +31,6 @@ CMakeUserPresets.json
 # Python cache
 __pycache__/
 *.pyc
+
+# Local agent workspace data
+/.workbuddy/

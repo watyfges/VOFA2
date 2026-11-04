@@ -5,6 +5,7 @@
 #include "commands/CommandStore.h"
 #include "data/ChannelStore.h"
 #include "protocol/ParserFactory.h"
+#include "remote/RemoteControlServer.h"
 #include "transport/TransportController.h"
 
 #include <QColor>
@@ -134,6 +135,17 @@ class AppController final : public QObject {
     Q_PROPERTY(qulonglong totalTxBytes READ totalTxBytes NOTIFY statsChanged)
     Q_PROPERTY(double framesPerSecond READ framesPerSecond NOTIFY statsChanged)
     Q_PROPERTY(qulonglong droppedFrames READ droppedFrames NOTIFY statsChanged)
+    // Remote tuning (mobile clients on the LAN).
+    Q_PROPERTY(bool remoteEnabled READ remoteEnabled WRITE setRemoteEnabled
+                   NOTIFY remoteChanged)
+    Q_PROPERTY(int remotePort READ remotePort WRITE setRemotePort NOTIFY remoteChanged)
+    Q_PROPERTY(QString remoteServerName READ remoteServerName WRITE setRemoteServerName
+                   NOTIFY remoteChanged)
+    Q_PROPERTY(QString remotePin READ remotePin WRITE setRemotePin NOTIFY remoteChanged)
+    Q_PROPERTY(QString remoteStatus READ remoteStatus NOTIFY remoteChanged)
+    Q_PROPERTY(QStringList remoteAddresses READ remoteAddresses NOTIFY remoteChanged)
+    Q_PROPERTY(int remoteClientCount READ remoteClientCount NOTIFY remoteClientsChanged)
+    Q_PROPERTY(QVariantList remoteClients READ remoteClients NOTIFY remoteClientsChanged)
 
 public:
     explicit AppController(QObject* parent = nullptr);
@@ -420,6 +432,23 @@ public:
     Q_INVOKABLE void setActionState(qulonglong bindingId, bool on);
     Q_INVOKABLE void requestDialog(const QString& name);
 
+    // Remote tuning. Enabling starts a LAN server that mirrors the sliders,
+    // toggles, action buttons and the one-click send button to phones.
+    [[nodiscard]] bool remoteEnabled() const { return remoteEnabled_; }
+    Q_INVOKABLE void setRemoteEnabled(bool enabled);
+    [[nodiscard]] int remotePort() const { return remotePort_; }
+    Q_INVOKABLE void setRemotePort(int port);
+    [[nodiscard]] QString remoteServerName() const { return remoteServerName_; }
+    Q_INVOKABLE void setRemoteServerName(const QString& name);
+    [[nodiscard]] QString remotePin() const { return remotePin_; }
+    Q_INVOKABLE void setRemotePin(const QString& pin);
+    [[nodiscard]] QString remoteStatus() const { return remoteStatus_; }
+    [[nodiscard]] QStringList remoteAddresses() const;
+    [[nodiscard]] int remoteClientCount() const;
+    [[nodiscard]] QVariantList remoteClients() const { return remoteClients_; }
+    Q_INVOKABLE void kickRemoteClient(qulonglong session);
+    Q_INVOKABLE void refreshRemoteServer();
+
 signals:
     void connectionStateChanged();
     void lastErrorChanged();
@@ -458,6 +487,8 @@ signals:
     void currentGroupChanged();
     void editHistoryChanged();
     void actionBindingsChanged();
+    void remoteChanged();
+    void remoteClientsChanged();
 
 private:
     void onStateChanged(transport::ConnectionState state, const QString& error);
@@ -524,6 +555,35 @@ private:
     void restoreEditSnapshot(const EditSnapshot& snapshot);
     void clearEditHistory();
 
+    // --- Remote tuning -------------------------------------------------
+    // The server never owns tuning state: every remote write is routed through
+    // the same methods the QML buttons call, then broadcast back as a delta.
+    void startRemoteServer();
+    void stopRemoteServer();
+    void updateRemoteStatus();
+    [[nodiscard]] remote::StateDoc buildRemoteState() const;
+    void sendRemoteStateTo(quint64 session);
+    void scheduleRemoteState();
+    void broadcastRemoteState();
+    void queueRemoteValue(quint64 bindingId,
+                          double value,
+                          const QString& from = QStringLiteral("pc"));
+    void flushRemoteValues();
+    void pushRemoteOneClick(const QString& phase);
+    void pushRemoteConn();
+    void refreshRemoteClients();
+    [[nodiscard]] QString remoteActorTag(quint64 session) const;
+    bool startOneClickSendForGroup(const QString& group, QString* error);
+    void applyActionState(quint64 bindingId, bool on, const QString& actor);
+    void triggerActionFrom(quint64 bindingId, const QString& actor);
+    void onRemoteValue(quint64 session,
+                       quint64 bindingId,
+                       double value,
+                       bool commit,
+                       bool exact);
+    void onRemoteAction(quint64 session, quint64 actionId, bool on, bool trigger);
+    void onRemoteOneClick(quint64 session, const QString& group, int intervalMs);
+
     struct ChannelConfig {
         QString name;
         QString color;
@@ -543,6 +603,18 @@ private:
     transport::TransportController transport_;
     SettingsStore settings_;
     commands::CommandStore commandStore_;
+    remote::RemoteControlServer remote_;
+    QTimer remoteStateTimer_;
+    QTimer remoteValueTimer_;
+    QTimer remoteClientsTimer_;
+    QHash<quint64, QPair<double, QString>> pendingRemoteValues_;
+    bool remoteEnabled_ = false;
+    quint16 remotePort_ = remote::kDefaultControlPort;
+    QString remoteServerName_;
+    QString remotePin_;
+    QString remoteStatus_;
+    QVariantList remoteClients_;
+    bool remoteLastStartOk_ = true;
     QTimer oneClickTimer_;
     QTimer reconnectTimer_;
     std::vector<commands::SendStep> oneClickSteps_;

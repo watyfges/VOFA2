@@ -14,6 +14,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QPair>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QSerialPort>
@@ -21,6 +22,7 @@
 #include <QSerialPortInfo>
 #include <QSet>
 #include <QStandardPaths>
+#include <QSysInfo>
 #include <QUrl>
 #include <QVariant>
 #include <QVariantMap>
@@ -316,6 +318,68 @@ AppController::AppController(QObject* parent)
     sendFilter_ = settings_.value(QStringLiteral("send/filter")).toString();
     loadActionBindings();
 
+    // Remote tuning: restore the LAN server settings. The listener only starts
+    // when the user has left the option enabled.
+    remoteServerName_ = settings_
+                            .value(QStringLiteral("remote/name"),
+                                   QSysInfo::machineHostName())
+                            .toString()
+                            .trimmed()
+                            .left(64);
+    if (remoteServerName_.isEmpty())
+        remoteServerName_ = QStringLiteral("VOFA2");
+    remotePort_ = static_cast<quint16>(std::clamp(
+        settings_.value(QStringLiteral("remote/port"),
+                        static_cast<int>(remote::kDefaultControlPort))
+            .toInt(),
+        1024, 65535));
+    remotePin_ = settings_.value(QStringLiteral("remote/pin")).toString().trimmed().left(12);
+    remoteEnabled_ = settings_.value(QStringLiteral("remote/enabled"), false).toBool();
+
+    remoteStateTimer_.setSingleShot(true);
+    remoteStateTimer_.setInterval(80);
+    connect(&remoteStateTimer_, &QTimer::timeout, this, &AppController::broadcastRemoteState);
+
+    remoteValueTimer_.setSingleShot(true);
+    remoteValueTimer_.setInterval(33);
+    connect(&remoteValueTimer_, &QTimer::timeout, this, &AppController::flushRemoteValues);
+
+    // A connection storm must not rebuild the QML client list thousands of
+    // times per second; coalesce the refresh.
+    remoteClientsTimer_.setSingleShot(true);
+    remoteClientsTimer_.setInterval(120);
+    connect(&remoteClientsTimer_, &QTimer::timeout, this, [this]() {
+        refreshRemoteClients();
+        updateRemoteStatus();
+    });
+    connect(&remote_, &remote::RemoteControlServer::clientsChanged, this, [this]() {
+        if (!remoteClientsTimer_.isActive())
+            remoteClientsTimer_.start();
+    });
+    connect(&remote_, &remote::RemoteControlServer::stateRequested, this,
+            &AppController::sendRemoteStateTo);
+    connect(&remote_, &remote::RemoteControlServer::valueRequested, this,
+            [this](quint64 session, quint64 bindingId, double value, bool commit, bool exact) {
+                onRemoteValue(session, bindingId, value, commit, exact);
+            });
+    connect(&remote_, &remote::RemoteControlServer::actionRequested, this,
+            [this](quint64 session, quint64 actionId, bool on, bool trigger) {
+                onRemoteAction(session, actionId, on, trigger);
+            });
+    connect(&remote_, &remote::RemoteControlServer::oneClickRequested, this,
+            [this](quint64 session, const QString& group, int intervalMs) {
+                onRemoteOneClick(session, group, intervalMs);
+            });
+    connect(&remote_, &remote::RemoteControlServer::oneClickStopRequested, this,
+            [this](quint64) { cancelOneClickSend(); });
+    connect(&remote_, &remote::RemoteControlServer::logLine, this,
+            [](const QString& line) { qInfo().noquote() << "[remote]" << line; });
+
+    if (remoteEnabled_)
+        startRemoteServer();
+    else
+        updateRemoteStatus();
+
     applyUiFont();
 
     const auto savedProtocol =
@@ -330,6 +394,10 @@ AppController::~AppController()
 {
     updateTimer_.stop();
     oneClickTimer_.stop();
+    remoteStateTimer_.stop();
+    remoteValueTimer_.stop();
+    remoteClientsTimer_.stop();
+    remote_.stop();
     transport_.close();
     (void)settings_.save();
     if (ownsImageProvider_)
@@ -392,6 +460,7 @@ void AppController::setOneClickIntervalMs(int value)
     oneClickIntervalMs_ = clamped;
     settings_.setValue(QStringLiteral("oneClick/intervalMs"), clamped);
     emit oneClickIntervalMsChanged();
+    scheduleRemoteState();
 }
 
 void AppController::setUiDensity(double value)
@@ -615,6 +684,7 @@ void AppController::setCurrentGroup(int index)
     rebuildOneClickBindings();
     rebuildActionBindings();
     emit currentGroupChanged();
+    scheduleRemoteState();
 }
 
 bool AppController::addCommandGroup(const QString& name)
@@ -2509,6 +2579,7 @@ void AppController::rebuildActionBindings()
     }
     actionBindings_ = std::move(list);
     emit actionBindingsChanged();
+    scheduleRemoteState();
 }
 
 void AppController::sendRawTemplate(const QString& text)
@@ -2543,6 +2614,11 @@ void AppController::sendRawTemplate(const QString& text)
 
 void AppController::triggerAction(qulonglong bindingId)
 {
+    triggerActionFrom(bindingId, QStringLiteral("pc"));
+}
+
+void AppController::triggerActionFrom(quint64 bindingId, const QString& actor)
+{
     const auto it = std::find_if(
         actions_.begin(), actions_.end(),
         [bindingId](const ActionEntry& entry) { return entry.id == bindingId; });
@@ -2550,13 +2626,21 @@ void AppController::triggerAction(qulonglong bindingId)
         return;
 
     if (it->kind == 1) {
-        setActionState(bindingId, !it->state);
+        applyActionState(bindingId, !it->state, actor);
         return;
     }
     sendRawTemplate(it->onTemplate);
+    // Buttons carry no state; the event still lets other clients show the
+    // press so two people do not fight over the same control.
+    remote_.broadcastAction(bindingId, it->kind, false, actor, true);
 }
 
 void AppController::setActionState(qulonglong bindingId, bool on)
+{
+    applyActionState(bindingId, on, QStringLiteral("pc"));
+}
+
+void AppController::applyActionState(quint64 bindingId, bool on, const QString& actor)
 {
     const auto it = std::find_if(
         actions_.begin(), actions_.end(),
@@ -2570,6 +2654,7 @@ void AppController::setActionState(qulonglong bindingId, bool on)
         sendRawTemplate(text);
     persistActionBindings();
     rebuildActionBindings();
+    remote_.broadcastAction(bindingId, it->kind, on, actor, false);
 }
 
 bool AppController::addActionBinding(const QString& label,
@@ -2971,6 +3056,7 @@ void AppController::rebuildOneClickBindings()
 
     oneClickBindings_ = std::move(bindings);
     emit oneClickBindingsChanged();
+    scheduleRemoteState();
 }
 
 void AppController::persistOneClickBindings()
@@ -3053,6 +3139,9 @@ void AppController::setBindingValue(qulonglong bindingId, double value)
         lastSliderSendMs_ = now;
         sendBindingCommand(bindingId);
     }
+
+    // Mirror the value to connected phones/tablets (coalesced to ~30 Hz).
+    queueRemoteValue(bindingId, clamped);
 }
 
 bool AppController::setBindingValueExact(qulonglong bindingId, double value)
@@ -3073,6 +3162,7 @@ bool AppController::setBindingValueExact(qulonglong bindingId, double value)
     rebuildOneClickBindings();
     persistOneClickBindings();
     sendBindingCommand(bindingId);
+    queueRemoteValue(bindingId, value);
     return true;
 }
 
@@ -3123,21 +3213,33 @@ void AppController::setBindingIncluded(qulonglong bindingId, bool included)
         }
     }
     persistOneClickBindings();
+    scheduleRemoteState();
 }
 
 void AppController::startOneClickSend()
 {
-    if (oneClickSending_)
-        return;
+    (void)startOneClickSendForGroup(currentGroupName(), nullptr);
+}
+
+bool AppController::startOneClickSendForGroup(const QString& group, QString* error)
+{
+    if (oneClickSending_) {
+        if (error != nullptr)
+            *error = QStringLiteral("一键发送正在进行中");
+        return false;
+    }
 
     auto plan = commandStore_.buildOneClickPlan(oneClickIntervalMs_,
-                                                currentGroupName().toStdString());
+                                                group.toStdString());
     if (plan.steps.empty()) {
         oneClickStatus_ = plan.errors.empty()
             ? QStringLiteral("没有可发送的滑块")
             : QStringLiteral("部分命令无法生成，请检查命令模板");
+        if (error != nullptr)
+            *error = oneClickStatus_;
         emit oneClickStateChanged();
-        return;
+        pushRemoteOneClick(QStringLiteral("idle"));
+        return false;
     }
 
     oneClickSteps_ = std::move(plan.steps);
@@ -3145,7 +3247,9 @@ void AppController::startOneClickSend()
     oneClickSending_ = true;
     oneClickStatus_ = QStringLiteral("准备发送 %1 项").arg(oneClickSteps_.size());
     emit oneClickStateChanged();
+    pushRemoteOneClick(QStringLiteral("start"));
     sendNextOneClickStep();
+    return true;
 }
 
 void AppController::sendNextOneClickStep()
@@ -3172,6 +3276,7 @@ void AppController::sendNextOneClickStep()
                           .arg(oneClickSteps_.size())
                           .arg(QString::fromStdString(step.label));
     emit oneClickStateChanged();
+    pushRemoteOneClick(QStringLiteral("step"));
 
     const auto delay = step.delayAfterMs > 0 ? step.delayAfterMs : oneClickIntervalMs_;
     oneClickTimer_.start(delay);
@@ -3190,6 +3295,7 @@ void AppController::finishOneClickSend(bool cancelled)
     oneClickSending_ = false;
     oneClickStatus_ = cancelled ? QStringLiteral("已取消") : QStringLiteral("发送完成");
     emit oneClickStateChanged();
+    pushRemoteOneClick(cancelled ? QStringLiteral("cancel") : QStringLiteral("done"));
 }
 
 void AppController::buildWaveform(int channel, int width, std::vector<float>& out) const
@@ -4072,6 +4178,7 @@ void AppController::onStateChanged(transport::ConnectionState state, const QStri
     lastError_ = error;
     emit connectionStateChanged();
     emit lastErrorChanged();
+    pushRemoteConn();
 }
 
 void AppController::onReceived(quint64 /*generation*/,
@@ -4350,6 +4457,366 @@ void AppController::setError(const QString& message)
         return;
     lastError_ = message;
     emit lastErrorChanged();
+}
+
+// ---------------------------------------------------------------------------
+// Remote tuning
+//
+// The PC stays authoritative: remote writes call the same methods the QML
+// controls call, and every accepted change is echoed as a delta so all clients
+// converge on the same state (last write wins).
+// ---------------------------------------------------------------------------
+
+void AppController::setRemoteEnabled(bool enabled)
+{
+    if (remoteEnabled_ == enabled)
+        return;
+
+    remoteEnabled_ = enabled;
+    settings_.setValue(QStringLiteral("remote/enabled"), enabled);
+    if (enabled)
+        startRemoteServer();
+    else
+        stopRemoteServer();
+    emit remoteChanged();
+}
+
+void AppController::setRemotePort(int port)
+{
+    const auto clamped = static_cast<quint16>(std::clamp(port, 1024, 65535));
+    if (remotePort_ == clamped)
+        return;
+
+    remotePort_ = clamped;
+    settings_.setValue(QStringLiteral("remote/port"), static_cast<int>(clamped));
+    if (remoteEnabled_) {
+        remote_.stop();
+        startRemoteServer();
+    }
+    emit remoteChanged();
+}
+
+void AppController::setRemoteServerName(const QString& name)
+{
+    const auto cleaned = name.trimmed().left(64);
+    if (cleaned.isEmpty() || cleaned == remoteServerName_)
+        return;
+
+    remoteServerName_ = cleaned;
+    settings_.setValue(QStringLiteral("remote/name"), cleaned);
+    remote_.setServerName(cleaned);
+    emit remoteChanged();
+}
+
+void AppController::setRemotePin(const QString& pin)
+{
+    const auto cleaned = pin.trimmed().left(12);
+    if (cleaned == remotePin_)
+        return;
+
+    remotePin_ = cleaned;
+    settings_.setValue(QStringLiteral("remote/pin"), cleaned);
+    remote_.setPin(cleaned);
+    emit remoteChanged();
+}
+
+QStringList AppController::remoteAddresses() const
+{
+    QStringList result;
+    if (!remote_.running())
+        return result;
+
+    const auto port = remote_.port();
+    for (const auto& address : remote_.localAddresses())
+        result.push_back(QStringLiteral("ws://%1:%2").arg(address).arg(port));
+    result.push_back(QStringLiteral("ws://127.0.0.1:%1").arg(port));
+    return result;
+}
+
+int AppController::remoteClientCount() const
+{
+    // Straight from the server so the count never lags a debounced refresh.
+    return remote_.greetedCount();
+}
+
+void AppController::kickRemoteClient(qulonglong session)
+{
+    remote_.kick(session);
+    refreshRemoteClients();
+    updateRemoteStatus();
+}
+
+void AppController::refreshRemoteServer()
+{
+    if (!remoteEnabled_)
+        return;
+    remote_.stop();
+    startRemoteServer();
+}
+
+void AppController::startRemoteServer()
+{
+    QString error;
+    remote_.setPin(remotePin_);
+    remote_.setServerName(remoteServerName_);
+    if (!remote_.start(remotePort_, remoteServerName_, remotePin_, &error)) {
+        remoteLastStartOk_ = false;
+        remoteStatus_ = error;
+        qWarning().noquote() << "[remote]" << error;
+        emit remoteChanged();
+        return;
+    }
+
+    remotePort_ = remote_.port();
+    remoteLastStartOk_ = true;
+    updateRemoteStatus();
+    refreshRemoteClients();
+}
+
+void AppController::stopRemoteServer()
+{
+    remote_.stop();
+    remoteClients_.clear();
+    emit remoteClientsChanged();
+    updateRemoteStatus();
+}
+
+void AppController::updateRemoteStatus()
+{
+    QString status;
+    if (!remoteEnabled_) {
+        status = QStringLiteral("未启用");
+    } else if (!remote_.running()) {
+        status = remoteLastStartOk_ ? QStringLiteral("已停止") : QStringLiteral("启动失败");
+    } else {
+        status = QStringLiteral("运行中 · 端口 %1").arg(remote_.port());
+        if (remote_.localAddresses().isEmpty())
+            status += QStringLiteral(" · 未找到局域网地址");
+        if (remote_.pinRequired())
+            status += QStringLiteral(" · 需访问码");
+    }
+
+    if (status == remoteStatus_)
+        return;
+    remoteStatus_ = status;
+    emit remoteChanged();
+}
+
+remote::StateDoc AppController::buildRemoteState() const
+{
+    remote::StateDoc doc;
+    doc.serverName = remoteServerName_;
+    doc.version = remote::RemoteControlServer::versionString();
+    doc.groups = commandGroups_;
+    doc.pcGroup = currentGroupName();
+
+    for (const auto& binding : commandStore_.bindings()) {
+        if (!commands::isValueControl(binding.kind))
+            continue;
+        remote::ControlDoc control;
+        control.id = binding.bindingId;
+        control.label = QString::fromStdString(binding.label);
+        control.group = QString::fromStdString(binding.group);
+        control.value = binding.args.empty() ? 0.0 : binding.args[0].floatValue;
+        control.minValue = binding.minValue;
+        control.maxValue = binding.maxValue;
+        control.step = binding.stepSize;
+        control.included = binding.includeInOneClickSend;
+        control.order = binding.order;
+        doc.controls.push_back(control);
+    }
+
+    for (const auto& action : actions_) {
+        remote::ActionDoc item;
+        item.id = action.id;
+        item.label = action.label;
+        item.group = action.group;
+        item.kind = action.kind;
+        item.state = action.state;
+        doc.actions.push_back(item);
+    }
+
+    doc.transportConnected = connected();
+    doc.transportState = connectionState();
+    doc.oneClick.sending = oneClickSending_;
+    doc.oneClick.sent = oneClickIndex_;
+    doc.oneClick.total = static_cast<int>(oneClickSteps_.size());
+    doc.oneClick.status = oneClickStatus_;
+    doc.oneClick.intervalMs = oneClickIntervalMs_;
+    return doc;
+}
+
+void AppController::sendRemoteStateTo(quint64 session)
+{
+    if (!remote_.running())
+        return;
+    remote_.sendState(session, remote::stateToJson(buildRemoteState(), 0));
+}
+
+void AppController::scheduleRemoteState()
+{
+    if (!remoteEnabled_ || !remote_.running())
+        return;
+    remoteStateTimer_.start();
+}
+
+void AppController::broadcastRemoteState()
+{
+    if (!remote_.running())
+        return;
+    remote_.broadcastState(remote::stateToJson(buildRemoteState(), 0));
+}
+
+void AppController::queueRemoteValue(quint64 bindingId, double value, const QString& from)
+{
+    if (!remote_.running())
+        return;
+    pendingRemoteValues_.insert(bindingId, qMakePair(value, from));
+    if (!remoteValueTimer_.isActive())
+        remoteValueTimer_.start();
+}
+
+void AppController::flushRemoteValues()
+{
+    if (pendingRemoteValues_.isEmpty())
+        return;
+
+    const auto pending = pendingRemoteValues_;
+    pendingRemoteValues_.clear();
+    for (auto it = pending.constBegin(); it != pending.constEnd(); ++it)
+        remote_.broadcastValue(it.key(), it.value().first, it.value().second);
+}
+
+void AppController::pushRemoteOneClick(const QString& phase)
+{
+    if (!remote_.running())
+        return;
+    remote_.broadcastOneClick(remote::oneClickMessage(
+        phase, oneClickIndex_, static_cast<int>(oneClickSteps_.size()), oneClickStatus_));
+}
+
+void AppController::pushRemoteConn()
+{
+    if (!remote_.running())
+        return;
+    remote_.broadcastConn(remote::connMessage(connected(), connectionState()));
+}
+
+void AppController::refreshRemoteClients()
+{
+    QVariantList list;
+    const auto clients = remote_.clients();
+    for (const auto& client : clients) {
+        if (!client.greeted)
+            continue;
+        QVariantMap item;
+        item.insert(QStringLiteral("id"), QVariant::fromValue<qulonglong>(client.session));
+        item.insert(QStringLiteral("name"),
+                    client.name.isEmpty()
+                        ? QStringLiteral("手机 %1").arg(client.session)
+                        : client.name);
+        item.insert(QStringLiteral("identity"), client.identity);
+        item.insert(QStringLiteral("address"), client.address);
+        item.insert(QStringLiteral("since"),
+                    QDateTime::fromMSecsSinceEpoch(client.connectedAtMs)
+                        .toString(QStringLiteral("HH:mm:ss")));
+        list.push_back(item);
+    }
+
+    remoteClients_ = std::move(list);
+    emit remoteClientsChanged();
+}
+
+QString AppController::remoteActorTag(quint64 session) const
+{
+    return QStringLiteral("c%1").arg(session);
+}
+
+void AppController::onRemoteValue(quint64 session,
+                                  quint64 bindingId,
+                                  double value,
+                                  bool commit,
+                                  bool exact)
+{
+    if (!std::isfinite(value)) {
+        remote_.sendError(session, QStringLiteral("bad_value"),
+                          QStringLiteral("数值无效"));
+        return;
+    }
+    if (commandStore_.findBinding(bindingId) == nullptr) {
+        remote_.sendError(session, QStringLiteral("unknown_control"),
+                          QStringLiteral("控件不存在或已被删除"));
+        return;
+    }
+
+    const auto actor = remoteActorTag(session);
+
+    if (commit && exact) {
+        // Typed value: same escape hatch the PC value field offers.
+        if (!setBindingValueExact(bindingId, value)) {
+            remote_.sendError(session, QStringLiteral("bad_value"),
+                              QStringLiteral("数值无效"));
+            return;
+        }
+        queueRemoteValue(bindingId, value, actor);
+        return;
+    }
+
+    setBindingValue(bindingId, value);
+    if (commit)
+        commitBindingValue(bindingId);
+
+    const auto* updated = commandStore_.findBinding(bindingId);
+    const auto actual = (updated != nullptr && !updated->args.empty())
+        ? static_cast<double>(updated->args[0].floatValue)
+        : value;
+    queueRemoteValue(bindingId, actual, actor);
+}
+
+void AppController::onRemoteAction(quint64 session,
+                                   quint64 actionId,
+                                   bool on,
+                                   bool trigger)
+{
+    const auto it = std::find_if(
+        actions_.begin(), actions_.end(),
+        [actionId](const ActionEntry& entry) { return entry.id == actionId; });
+    if (it == actions_.end()) {
+        remote_.sendError(session, QStringLiteral("unknown_control"),
+                          QStringLiteral("按键/开关不存在"));
+        return;
+    }
+
+    const auto actor = remoteActorTag(session);
+    if (it->kind == 1) {
+        if (trigger)
+            triggerActionFrom(actionId, actor);
+        else
+            applyActionState(actionId, on, actor);
+    } else {
+        triggerActionFrom(actionId, actor);
+    }
+}
+
+void AppController::onRemoteOneClick(quint64 session, const QString& group, int intervalMs)
+{
+    const auto target = group.trimmed().isEmpty() ? currentGroupName() : group.trimmed();
+    if (!commandGroups_.contains(target)) {
+        remote_.sendError(session, QStringLiteral("unknown_group"),
+                          QStringLiteral("命令组不存在"));
+        return;
+    }
+    if (oneClickSending_) {
+        remote_.sendError(session, QStringLiteral("busy"),
+                          QStringLiteral("一键发送正在进行中"));
+        return;
+    }
+    if (intervalMs > 0)
+        setOneClickIntervalMs(intervalMs);
+
+    QString error;
+    if (!startOneClickSendForGroup(target, &error) && !error.isEmpty())
+        remote_.sendError(session, QStringLiteral("empty_plan"), error);
 }
 
 } // namespace vofa::app

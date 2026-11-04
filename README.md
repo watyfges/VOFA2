@@ -20,6 +20,11 @@ Phase 0/1 foundation:
 - `src/transport`: dedicated-thread serial/TCP client/TCP server/UDP worker,
   connection state machine, active TCP client selection, backpressure and
   parser integration.
+- `src/remote`: LAN remote tuning for phones. `RemoteControlServer` accepts
+  WebSocket clients (the RFC 6455 subset lives in `WebSocketConnection`, since
+  Qt WebSockets is not part of every Qt build), answers UDP discovery probes,
+  and mirrors slider values, toggles, action buttons and one-click sending to
+  up to 16 clients. Protocol and sync rules: `docs/REMOTE_TUNING.md`.
 - `src/app`: `AppController` (QML-facing session facade), `CommandStore`
   wiring, atomic `SettingsStore` with autosave/recovery, `ImageProvider`
   (`image://vofa/<id>?rev=…`), and the native `WaveformItem`.

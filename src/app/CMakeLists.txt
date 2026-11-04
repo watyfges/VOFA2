@@ -20,6 +20,7 @@ target_link_libraries(vofa_app_controller PUBLIC
     vofa_protocol
     vofa_commands
     vofa_data
+    vofa_remote
     vofa_transport
 )
 target_include_directories(vofa_app_controller PUBLIC

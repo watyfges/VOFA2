@@ -27,3 +27,33 @@ target_link_libraries(vofa_app_controller_tests PRIVATE
 )
 
 add_test(NAME vofa_app_controller_tests COMMAND vofa_app_controller_tests)
+
+add_executable(vofa_remote_tests
+    test_remote.cpp
+)
+
+target_link_libraries(vofa_remote_tests PRIVATE
+    Qt6::Test
+    Qt6::Core
+    Qt6::Network
+    Qt6::SerialPort
+    vofa_remote
+    vofa_app_controller
+)
+
+add_test(NAME vofa_remote_tests COMMAND vofa_remote_tests)
+
+add_executable(vofa_remote_robustness_tests
+    test_remote_robustness.cpp
+)
+
+target_link_libraries(vofa_remote_robustness_tests PRIVATE
+    Qt6::Test
+    Qt6::Core
+    Qt6::Network
+    Qt6::SerialPort
+    vofa_remote
+    vofa_app_controller
+)
+
+add_test(NAME vofa_remote_robustness_tests COMMAND vofa_remote_robustness_tests)
