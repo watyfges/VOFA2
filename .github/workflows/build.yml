@@ -103,6 +103,19 @@ jobs:
         shell: pwsh
         run: cmake --build $env:BUILD_DIR
 
+      - name: Verify version stamp
+        shell: pwsh
+        run: |
+          # 版本号要真的进了 exe 资源，不能只是文件名带版本。
+          $info = (Get-Item "$env:BUILD_DIR\vofa2_app.exe").VersionInfo
+          Write-Host "exe FileVersion=$($info.FileVersion) ProductVersion=$($info.ProductVersion)"
+          if ($info.ProductVersion -ne $env:APP_VERSION) {
+            throw "exe 版本 '$($info.ProductVersion)' 与构建版本 '$env:APP_VERSION' 不一致"
+          }
+          if ($info.FileDescription -ne 'VOFA2 串口示波器') {
+            throw "版本资源里的中文描述异常（多为 windres 编码问题）：'$($info.FileDescription)'"
+          }
+
       - name: Test
         shell: pwsh
         env:
