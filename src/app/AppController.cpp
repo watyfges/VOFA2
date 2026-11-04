@@ -4758,6 +4758,7 @@ void AppController::onRemoteValue(quint64 session,
                               QStringLiteral("数值无效"));
             return;
         }
+        emit remoteValueApplied(bindingId, value);
         queueRemoteValue(bindingId, value, actor);
         return;
     }
@@ -4770,6 +4771,9 @@ void AppController::onRemoteValue(quint64 session,
     const auto actual = (updated != nullptr && !updated->args.empty())
         ? static_cast<double>(updated->args[0].floatValue)
         : value;
+    // setBindingValue() 只就地改 oneClickBindings_，不触发
+    // oneClickBindingsChanged，PC 界面因此不会跟着动。
+    emit remoteValueApplied(bindingId, actual);
     queueRemoteValue(bindingId, actual, actor);
 }
 

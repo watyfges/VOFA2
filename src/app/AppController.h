@@ -459,6 +459,9 @@ signals:
     void oneClickIntervalMsChanged();
     void serialPortsChanged();
     void oneClickBindingsChanged();
+    // 远程端（手机）写入滑块值后单独广播，界面只需 patch 对应那一行，
+    // 不必整表重建——整表重建会打断 PC 正在进行的拖动。
+    void remoteValueApplied(qulonglong bindingId, double value);
     void oneClickStateChanged();
     void waveformChanged();
     void waveformWindowChanged();

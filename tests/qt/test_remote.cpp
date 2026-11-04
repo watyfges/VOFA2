@@ -267,6 +267,9 @@ void TestRemote::controllerSyncsRemoteValue()
     QVERIFY(port != 0);
 
     app::AppController controller;
+    // PC 界面靠这条信号刷新被远程改动的行；它必须真的被发出来。
+    QSignalSpy appliedSpy(&controller, &app::AppController::remoteValueApplied);
+    QVERIFY(appliedSpy.isValid());
     QVERIFY(controller.addOneClickBinding(QStringLiteral("remoteKp"),
                                           QStringLiteral("remoteKp%.3f"),
                                           0.0, 10.0, 0.01, 1.0, true,
@@ -329,12 +332,20 @@ void TestRemote::controllerSyncsRemoteValue()
     QCOMPARE(echo.value(QStringLiteral("v")).toDouble(), 4.5);
     QVERIFY(echo.value(QStringLiteral("from")).toString().startsWith(QLatin1Char('c')));
 
+    // ...and the PC UI is told exactly which row moved.
+    QCOMPARE(appliedSpy.count(), 1);
+    const auto applied = appliedSpy.at(0);
+    QCOMPARE(applied.at(0).toULongLong(), controlId);
+    QCOMPARE(applied.at(1).toDouble(), 4.5);
+
     // The other direction: a change made on the PC reaches the phone.
     controller.setBindingValue(controlId, 7.5);
     const auto pushed = client.waitFor(QStringLiteral("value"));
     QVERIFY(!pushed.isEmpty());
     QCOMPARE(pushed.value(QStringLiteral("v")).toDouble(), 7.5);
     QCOMPARE(pushed.value(QStringLiteral("from")).toString(), QStringLiteral("pc"));
+    // PC 本地改动不走这条信号，否则界面会自己覆盖自己。
+    QCOMPARE(appliedSpy.count(), 1);
 
     // Multi-client fan-out: a second phone sees the first phone's writes too.
     WsClient other;
@@ -358,6 +369,19 @@ void TestRemote::controllerSyncsRemoteValue()
         QCOMPARE(broadcast.value(QStringLiteral("v")).toDouble(), 6.25);
         QVERIFY(broadcast.value(QStringLiteral("from")).toString().startsWith(QLatin1Char('c')));
     }
+
+    // Typed value (exact escape hatch) must refresh the PC row as well.
+    const auto before = appliedSpy.count();
+    client.send(QJsonObject {
+        {QStringLiteral("t"), QStringLiteral("commit")},
+        {QStringLiteral("id"), static_cast<double>(controlId)},
+        {QStringLiteral("v"), 8.75},
+        {QStringLiteral("exact"), true},
+    });
+    QTRY_COMPARE_WITH_TIMEOUT(appliedSpy.count(), before + 1, 3000);
+    const auto exactApplied = appliedSpy.last();
+    QCOMPARE(exactApplied.at(0).toULongLong(), controlId);
+    QCOMPARE(exactApplied.at(1).toDouble(), 8.75);
 }
 
 void TestRemote::controllerSyncsRemoteAction()

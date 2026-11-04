@@ -1888,8 +1888,9 @@ ApplicationWindow {
                                 value: model.value
                                 stepSize: model.step
                                 onMoved: {
+                                    // 只改模型；输入框的 text 绑在 model.value 上，
+                                    // 手动赋值会切断绑定，导致后续远程改动不再刷新。
                                     sliderModel.setProperty(index, "value", value);
-                                    valueField.text = window.formatNumber(value);
                                     app.setBindingValue(model.id, value);
                                 }
                                 onPressedChanged: {
@@ -1921,6 +1922,15 @@ ApplicationWindow {
         target: app
         function onOneClickBindingsChanged() {
             window.syncBindings();
+        }
+        // 手机端拖滑块只会走这里：只改对应那一行，不整表重建。
+        function onRemoteValueApplied(bindingId, value) {
+            for (let i = 0; i < sliderModel.count; ++i) {
+                if (sliderModel.get(i).id == bindingId) {
+                    sliderModel.setProperty(i, "value", value);
+                    break;
+                }
+            }
         }
         function onActionBindingsChanged() {
             window.syncActions();
