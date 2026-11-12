@@ -139,6 +139,36 @@ ClientMessage parseClientMessage(const QByteArray& payload)
         return message;
     }
 
+    if (type == QLatin1String("link")) {
+        message.type = ClientMessageType::Link;
+        auto& link = message.link;
+        link.cmd = root.value(QLatin1String("cmd")).toString().left(16);
+        if (link.cmd.isEmpty()) {
+            message.type = ClientMessageType::Unknown;
+            message.error = QStringLiteral("link 需要 cmd 字段（open/close/refresh）");
+            return message;
+        }
+        const auto kind = root.value(QLatin1String("kind"));
+        if (kind.isDouble())
+            link.kind = static_cast<int>(kind.toDouble());
+        // `port` doubles as the serial name (string) and a TCP port (number).
+        const auto port = root.value(QLatin1String("port"));
+        if (port.isString())
+            link.port = port.toString().left(64);
+        else if (port.isDouble())
+            link.tcpPort = static_cast<int>(port.toDouble());
+        link.baud = root.value(QLatin1String("baud")).toInt(0);
+        link.dataBits = root.value(QLatin1String("dataBits")).toInt(0);
+        link.parity = root.value(QLatin1String("parity")).toInt(-1);
+        link.stopBits = root.value(QLatin1String("stopBits")).toInt(0);
+        link.flowControl = root.value(QLatin1String("flowControl")).toInt(-1);
+        link.host = root.value(QLatin1String("host")).toString().left(64);
+        link.remotePort = root.value(QLatin1String("remotePort")).toInt(0);
+        link.localPort = root.value(QLatin1String("localPort")).toInt(0);
+        link.banner = root.value(QLatin1String("banner")).toString().left(64);
+        return message;
+    }
+
     if (type == QLatin1String("action")) {
         message.type = ClientMessageType::Action;
         if (!readId(root.value(QLatin1String("id")), message.id)) {
@@ -157,6 +187,32 @@ ClientMessage parseClientMessage(const QByteArray& payload)
 
     message.error = QStringLiteral("未知消息类型：%1").arg(type.left(32));
     return message;
+}
+
+QJsonObject linkPayload(const LinkDoc& doc)
+{
+    QJsonObject link;
+    link.insert(QStringLiteral("kind"), doc.kind);
+    link.insert(QStringLiteral("connected"), doc.connected);
+    link.insert(QStringLiteral("state"), doc.state);
+    link.insert(QStringLiteral("ports"), stringArray(doc.ports));
+    link.insert(QStringLiteral("serialPort"), doc.serialPort);
+    link.insert(QStringLiteral("baud"), doc.baud);
+    link.insert(QStringLiteral("tcpHost"), doc.tcpHost);
+    link.insert(QStringLiteral("tcpClientPort"), doc.tcpClientPort);
+    link.insert(QStringLiteral("tcpServerPort"), doc.tcpServerPort);
+    link.insert(QStringLiteral("tcpClients"), doc.tcpClients);
+    link.insert(QStringLiteral("udpHost"), doc.udpHost);
+    link.insert(QStringLiteral("udpRemotePort"), doc.udpRemotePort);
+    link.insert(QStringLiteral("udpLocalPort"), doc.udpLocalPort);
+    return link;
+}
+
+QJsonObject linkMessage(const LinkDoc& doc)
+{
+    QJsonObject root = linkPayload(doc);
+    root.insert(QStringLiteral("t"), QStringLiteral("link"));
+    return root;
 }
 
 QJsonObject stateToJson(const StateDoc& doc, quint64 seq)
@@ -202,6 +258,8 @@ QJsonObject stateToJson(const StateDoc& doc, quint64 seq)
     conn.insert(QStringLiteral("connected"), doc.transportConnected);
     conn.insert(QStringLiteral("state"), doc.transportState);
     root.insert(QStringLiteral("conn"), conn);
+
+    root.insert(QStringLiteral("link"), linkPayload(doc.link));
 
     QJsonObject oneClick;
     oneClick.insert(QStringLiteral("sending"), doc.oneClick.sending);

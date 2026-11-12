@@ -1845,8 +1845,24 @@ ApplicationWindow {
                         clip: true
 
                         delegate: ColumnLayout {
+                            id: sliderDelegate
                             width: sliderView.width
                             spacing: window.dp(2)
+
+                            // 上下箭头按步进走；输入框直接输入什么就是什么。
+                            function stepValue(direction) {
+                                const step = model.step > 0
+                                    ? model.step
+                                    : (Math.abs(model.max - model.min) > 0
+                                       ? Math.abs(model.max - model.min) / 100 : 1);
+                                let next = Number(model.value) + direction * step;
+                                next = model.min + Math.round((next - model.min) / step) * step;
+                                next = Math.min(model.max, Math.max(model.min, next));
+                                sliderModel.setProperty(index, "value", next);
+                                valueField.text = window.formatNumber(next);
+                                app.setBindingValue(model.id, next);
+                                app.commitBindingValue(model.id);
+                            }
 
                             RowLayout {
                                 Layout.fillWidth: true
@@ -1855,28 +1871,66 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     elide: Text.ElideRight
                                 }
-                                TextField {
-                                    id: valueField
-                                    Layout.preferredWidth: window.dp(86)
-                                    Layout.minimumWidth: window.dp(66)
-                                    text: window.formatNumber(model.value)
-                                    horizontalAlignment: TextInput.AlignRight
-                                    inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                    selectByMouse: true
-                                    // Accept any number for debugging, including
-                                    // values outside the slider's min/max.
-                                    onEditingFinished: {
-                                        const typed = Number(text.trim());
-                                        if (!isFinite(typed) || text.trim() === "") {
-                                            text = window.formatNumber(model.value);
-                                            return;
+                                RowLayout {
+                                    Layout.preferredWidth: window.dp(122)
+                                    Layout.minimumWidth: window.dp(100)
+                                    spacing: window.dp(2)
+
+                                    TextField {
+                                        id: valueField
+                                        Layout.fillWidth: true
+                                        text: window.formatNumber(model.value)
+                                        horizontalAlignment: TextInput.AlignRight
+                                        inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                        selectByMouse: true
+                                        // Accept any number for debugging, including
+                                        // values outside the slider's min/max.
+                                        onEditingFinished: {
+                                            const typed = Number(text.trim());
+                                            if (!isFinite(typed) || text.trim() === "") {
+                                                text = window.formatNumber(model.value);
+                                                return;
+                                            }
+                                            text = window.formatNumber(typed);
+                                            sliderModel.setProperty(index, "value", typed);
+                                            const bindingId = model.id;
+                                            Qt.callLater(function() {
+                                                app.setBindingValueExact(bindingId, typed);
+                                            });
                                         }
-                                        text = window.formatNumber(typed);
-                                        sliderModel.setProperty(index, "value", typed);
-                                        const bindingId = model.id;
-                                        Qt.callLater(function() {
-                                            app.setBindingValueExact(bindingId, typed);
-                                        });
+                                    }
+
+                                    ColumnLayout {
+                                        spacing: 0
+                                        Layout.preferredWidth: window.dp(20)
+
+                                        ToolButton {
+                                            text: "\u25B2"
+                                            font.pixelSize: window.fontPx(7)
+                                            padding: 0
+                                            Layout.preferredWidth: window.dp(20)
+                                            Layout.preferredHeight: window.dp(14)
+                                            onClicked: sliderDelegate.stepValue(1)
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: qsTr("加一个步进；右键数值框可改步进")
+                                        }
+                                        ToolButton {
+                                            text: "\u25BC"
+                                            font.pixelSize: window.fontPx(7)
+                                            padding: 0
+                                            Layout.preferredWidth: window.dp(20)
+                                            Layout.preferredHeight: window.dp(14)
+                                            onClicked: sliderDelegate.stepValue(-1)
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: qsTr("减一个步进；右键数值框可改步进")
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        acceptedButtons: Qt.RightButton
+                                        onClicked: stepDialog.openFor(model.id, model.label,
+                                                                      model.step)
                                     }
                                 }
                             }
@@ -2073,6 +2127,90 @@ ApplicationWindow {
         } else {
             x = Math.max(0, Math.round((Screen.width - width) / 2));
             y = Math.max(0, Math.round((Screen.height - height) / 2));
+        }
+    }
+
+    Dialog {
+        id: stepDialog
+        title: qsTr("设置步进")
+        modal: true
+        width: Math.min(window.dp(320), Screen.width - 40)
+        parent: Overlay.overlay
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round((parent.height - height) / 2)
+
+        property int bindingId: 0
+        property string bindingLabel: ""
+        property real currentStep: 0.01
+
+        function openFor(id, label, stepValue) {
+            bindingId = id;
+            bindingLabel = label;
+            currentStep = stepValue > 0 ? stepValue : 0.01;
+            stepField.text = String(currentStep);
+            open();
+        }
+
+        contentItem: ColumnLayout {
+            spacing: window.dp(8)
+
+            Label {
+                text: qsTr("滑块：%1").arg(stepDialog.bindingLabel)
+                Layout.fillWidth: true
+                elide: Text.ElideRight
+            }
+
+            Label {
+                text: qsTr("上下箭头和滑杆都按这个步进；直接输入数值不受限制。")
+                color: window.theme.tip
+                font.pixelSize: window.fontPx(11)
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Label { text: qsTr("步进") }
+                TextField {
+                    id: stepField
+                    Layout.fillWidth: true
+                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Repeater {
+                    model: [0.001, 0.01, 0.1, 1]
+                    Button {
+                        text: String(modelData)
+                        Layout.fillWidth: true
+                        onClicked: stepField.text = String(modelData)
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: qsTr("取消")
+                    onClicked: stepDialog.close()
+                }
+                Button {
+                    text: qsTr("保存")
+                    highlighted: true
+                    onClicked: {
+                        const value = Number(stepField.text.trim());
+                        if (!isFinite(value) || value <= 0) {
+                            stepField.text = String(stepDialog.currentStep);
+                            return;
+                        }
+                        app.setBindingStep(stepDialog.bindingId, value);
+                        stepDialog.close();
+                    }
+                }
+            }
         }
     }
 

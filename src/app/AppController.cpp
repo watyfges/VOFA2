@@ -370,6 +370,10 @@ AppController::AppController(QObject* parent)
             [this](quint64 session, quint64 bindingId, bool included) {
                 onRemoteInclusion(session, bindingId, included);
             });
+    connect(&remote_, &remote::RemoteControlServer::linkRequested, this,
+            [this](quint64 session, const remote::LinkCommand& command) {
+                onRemoteLink(session, command);
+            });
     connect(&remote_, &remote::RemoteControlServer::oneClickRequested, this,
             [this](quint64 session, const QString& group, int intervalMs) {
                 onRemoteOneClick(session, group, intervalMs);
@@ -2139,6 +2143,7 @@ void AppController::refreshSerialPorts()
     if (serialPorts_ != ports) {
         serialPorts_ = std::move(ports);
         emit serialPortsChanged();
+        pushRemoteLink();
     }
 }
 
@@ -3026,8 +3031,23 @@ bool AppController::removeOneClickBinding(qulonglong bindingId)
     return true;
 }
 
-void AppController::rebuildOneClickBindings()
+bool AppController::setBindingStep(qulonglong bindingId, double stepSize)
 {
+    const auto* binding = commandStore_.findBinding(bindingId);
+    if (binding == nullptr)
+        return false;
+    if (!std::isfinite(stepSize) || stepSize < 0.0)
+        return false;
+
+    // 只改步进，min/max 保持原样；滑杆与数值框箭头都吃这个值。
+    commandStore_.setBindingMetadata(bindingId, binding->minValue, binding->maxValue,
+                                     stepSize);
+    rebuildOneClickBindings();
+    persistOneClickBindings();
+    return true;
+}
+
+void AppController::rebuildOneClickBindings(){
     QVariantList bindings;
     bindings.reserve(static_cast<int>(commandStore_.bindings().size()));
     const auto activeGroup = currentGroupName();
@@ -4246,6 +4266,9 @@ void AppController::onStateChanged(transport::ConnectionState state, const QStri
     emit connectionStateChanged();
     emit lastErrorChanged();
     pushRemoteConn();
+    // 手机端的连接面板靠这两条消息刷新：link 立即发，state 防抖后补全。
+    pushRemoteLink();
+    scheduleRemoteState();
 }
 
 void AppController::onReceived(quint64 /*generation*/,
@@ -4702,6 +4725,7 @@ remote::StateDoc AppController::buildRemoteState() const
 
     doc.transportConnected = connected();
     doc.transportState = connectionState();
+    doc.link = buildRemoteLink();
     doc.oneClick.sending = oneClickSending_;
     doc.oneClick.sent = oneClickIndex_;
     doc.oneClick.total = static_cast<int>(oneClickSteps_.size());
@@ -4881,6 +4905,134 @@ void AppController::onRemoteInclusion(quint64 session, quint64 bindingId, bool i
     commandStore_.setBindingIncluded(bindingId, included);
     rebuildOneClickBindings();
     persistOneClickBindings();
+}
+
+void AppController::onRemoteLink(quint64 session, const remote::LinkCommand& command)
+{
+    const auto cmd = command.cmd.trimmed().toLower();
+
+    if (cmd == QLatin1String("refresh")) {
+        refreshSerialPorts();
+        pushRemoteLink();
+        return;
+    }
+    if (cmd == QLatin1String("close")) {
+        closeTransport();
+        return;
+    }
+    if (cmd != QLatin1String("open")) {
+        remote_.sendError(session, QStringLiteral("bad_request"),
+                          QStringLiteral("link.cmd 只能是 open/close/refresh"));
+        return;
+    }
+    if (connected()) {
+        remote_.sendError(session, QStringLiteral("link_busy"),
+                          QStringLiteral("连接已建立，请先断开再切换"));
+        return;
+    }
+
+    const auto settingInt = [this](const char* key, int fallback) {
+        const auto value = settings_.value(QString::fromLatin1(key)).toInt();
+        return value > 0 ? value : fallback;
+    };
+    const auto settingString = [this](const char* key, const QString& fallback) {
+        const auto value = settings_.value(QString::fromLatin1(key)).toString();
+        return value.isEmpty() ? fallback : value;
+    };
+
+    switch (command.kind) {
+    case 0: {
+        const auto port = command.port.isEmpty()
+            ? settingString("connection/serial/port", QString())
+            : command.port;
+        if (port.isEmpty()) {
+            remote_.sendError(session, QStringLiteral("no_port"),
+                              QStringLiteral("没有可用的串口：请先在 PC 上刷新并选择"));
+            return;
+        }
+        openSerialAdvanced(port,
+                           command.baud > 0 ? command.baud
+                                            : settingInt("connection/serial/baud", 115200),
+                           command.dataBits > 0
+                               ? command.dataBits
+                               : settingInt("connection/serial/dataBits", 8),
+                           command.parity >= 0
+                               ? command.parity
+                               : settingInt("connection/serial/parity", 0),
+                           command.stopBits > 0
+                               ? command.stopBits
+                               : settingInt("connection/serial/stopBits", 1),
+                           command.flowControl >= 0
+                               ? command.flowControl
+                               : settingInt("connection/serial/flowControl", 0),
+                           false,
+                           false);
+        break;
+    }
+    case 1:
+        openTcpClient(command.host.isEmpty() ? tcpClientHost_ : command.host,
+                      command.tcpPort > 0 ? command.tcpPort : tcpClientPort_,
+                      command.banner.isEmpty() ? tcpClientBanner_ : command.banner);
+        break;
+    case 2:
+        openTcpServer(command.tcpPort > 0 ? command.tcpPort : tcpServerPort_);
+        break;
+    case 3:
+        openUdp(command.host.isEmpty()
+                    ? settingString("connection/udp/remoteHost", QStringLiteral("127.0.0.1"))
+                    : command.host,
+                command.remotePort > 0
+                    ? command.remotePort
+                    : settingInt("connection/udp/remotePort", 1346),
+                command.localPort > 0
+                    ? command.localPort
+                    : settingInt("connection/udp/localPort", 1347));
+        break;
+    case 4:
+        openDemo();
+        break;
+    default:
+        remote_.sendError(session, QStringLiteral("bad_link"),
+                          QStringLiteral("kind 只能是 0..4"));
+        return;
+    }
+
+    pushRemoteLink();
+    scheduleRemoteState();
+}
+
+remote::LinkDoc AppController::buildRemoteLink() const
+{
+    remote::LinkDoc doc;
+    doc.kind = transportKind_;
+    doc.connected = connected();
+    doc.state = connectionState();
+    doc.ports = serialPorts_;
+
+    doc.serialPort = settings_.value(QStringLiteral("connection/serial/port")).toString();
+    const auto baud = settings_.value(QStringLiteral("connection/serial/baud")).toInt();
+    doc.baud = baud > 0 ? baud : 115200;
+
+    doc.tcpHost = tcpClientHost_;
+    doc.tcpClientPort = tcpClientPort_;
+    doc.tcpServerPort = tcpServerPort_;
+    doc.tcpClients = clientIds_.size();
+
+    const auto udpHost =
+        settings_.value(QStringLiteral("connection/udp/remoteHost")).toString();
+    doc.udpHost = udpHost.isEmpty() ? QStringLiteral("127.0.0.1") : udpHost;
+    const auto udpRemote = settings_.value(QStringLiteral("connection/udp/remotePort")).toInt();
+    doc.udpRemotePort = udpRemote > 0 ? udpRemote : 1346;
+    const auto udpLocal = settings_.value(QStringLiteral("connection/udp/localPort")).toInt();
+    doc.udpLocalPort = udpLocal > 0 ? udpLocal : 1347;
+    return doc;
+}
+
+void AppController::pushRemoteLink()
+{
+    if (!remote_.running())
+        return;
+    remote_.broadcastToAll(remote::linkMessage(buildRemoteLink()));
 }
 
 void AppController::onRemoteOneClick(quint64 session, const QString& group, int intervalMs)

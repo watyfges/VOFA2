@@ -414,6 +414,8 @@ public:
                                            bool included,
                                            const QString& group);
     Q_INVOKABLE bool removeOneClickBinding(qulonglong bindingId);
+    // 步进值：数值框上下箭头和滑杆共用；输入框不受它限制。
+    Q_INVOKABLE bool setBindingStep(qulonglong bindingId, double stepSize);
     Q_INVOKABLE void repeatRecentSend(int index);
     Q_INVOKABLE void repeatRecentSendEntry(const QString& text, bool hex);
     Q_INVOKABLE void clearRecentSends();
@@ -586,6 +588,8 @@ private:
     void flushRemoteValues();
     void pushRemoteOneClick(const QString& phase);
     void pushRemoteConn();
+    void pushRemoteLink();
+    [[nodiscard]] remote::LinkDoc buildRemoteLink() const;
     void refreshRemoteClients();
     [[nodiscard]] QString remoteActorTag(quint64 session) const;
     bool startOneClickSendForGroup(const QString& group, QString* error);
@@ -598,6 +602,7 @@ private:
                        bool exact);
     void onRemoteAction(quint64 session, quint64 actionId, bool on, bool trigger);
     void onRemoteInclusion(quint64 session, quint64 bindingId, bool included);
+    void onRemoteLink(quint64 session, const remote::LinkCommand& command);
     void onRemoteOneClick(quint64 session, const QString& group, int intervalMs);
 
     struct ChannelConfig {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QMetaType>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -65,6 +66,41 @@ struct OneClickDoc {
     int intervalMs = 100;
 };
 
+// Transport state shown to phones so they can drive the connection panel:
+// which kind is selected, whether it is up, and the parameters in use.
+struct LinkDoc {
+    int kind = 0;  // 0 serial, 1 tcp client, 2 tcp server, 3 udp, 4 demo
+    bool connected = false;
+    QString state;
+    QStringList ports;
+    QString serialPort;
+    int baud = 115200;
+    QString tcpHost = QStringLiteral("127.0.0.1");
+    int tcpClientPort = 1346;
+    int tcpServerPort = 1347;
+    int tcpClients = 0;
+    QString udpHost = QStringLiteral("127.0.0.1");
+    int udpRemotePort = 1346;
+    int udpLocalPort = 1347;
+};
+
+// Client → server: open/close/refresh the PC connection.
+struct LinkCommand {
+    QString cmd;  // open / close / refresh
+    int kind = -1;
+    QString port;  // serial port name
+    int baud = 0;
+    int dataBits = 0;
+    int parity = -1;
+    int stopBits = 0;
+    int flowControl = -1;
+    QString host;
+    int tcpPort = 0;
+    int remotePort = 0;
+    int localPort = 0;
+    QString banner;
+};
+
 // Full snapshot. The client replaces its model with this document; deltas
 // (`value`, `action`, `oneclick`, `conn`) only ever adjust existing entries.
 struct StateDoc {
@@ -76,6 +112,7 @@ struct StateDoc {
     QVector<ActionDoc> actions;
     bool transportConnected = false;
     QString transportState;
+    LinkDoc link;
     OneClickDoc oneClick;
 };
 
@@ -91,6 +128,8 @@ enum class ClientMessageType {
     Ping,
     // Toggle "参与一键发送数据" (`controls[].inc`) from a phone.
     Inclusion,
+    // Drive the PC connection panel (serial / TCP / UDP / demo).
+    Link,
 };
 
 struct ClientMessage {
@@ -117,7 +156,13 @@ struct ClientMessage {
 
     // inc
     bool included = false;
+
+    // link
+    LinkCommand link;
 };
+
+[[nodiscard]] QJsonObject linkPayload(const LinkDoc& doc);
+[[nodiscard]] QJsonObject linkMessage(const LinkDoc& doc);
 
 // Returns Unknown with `error` set when the payload is not a usable message.
 [[nodiscard]] ClientMessage parseClientMessage(const QByteArray& payload);
@@ -154,3 +199,5 @@ struct ClientMessage {
                                          const QString& version);
 
 } // namespace vofa::remote
+
+Q_DECLARE_METATYPE(vofa::remote::LinkCommand)

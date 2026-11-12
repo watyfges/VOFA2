@@ -60,6 +60,7 @@ private slots:
     void controllerSyncsRemoteValue();
     void controllerSyncsRemoteAction();
     void controllerSyncsRemoteInclusion();
+    void controllerSyncsRemoteLink();
     void kickDropsTheClient();
 };
 
@@ -166,6 +167,20 @@ void TestRemote::protocolParsesClientMessages()
     QCOMPARE(message.type, ClientMessageType::Unknown);
 
     message = remote::parseClientMessage(R"({"t":"setBindingValue","id":5})");
+    QCOMPARE(message.type, ClientMessageType::Unknown);
+
+    message = remote::parseClientMessage(R"({"t":"link","cmd":"open","kind":2,"port":1347})");
+    QCOMPARE(message.type, ClientMessageType::Link);
+    QCOMPARE(message.link.cmd, QStringLiteral("open"));
+    QCOMPARE(message.link.kind, 2);
+    QCOMPARE(message.link.tcpPort, 1347);
+
+    message = remote::parseClientMessage(R"({"t":"link","cmd":"open","kind":0,"port":"COM3","baud":115200})");
+    QCOMPARE(message.type, ClientMessageType::Link);
+    QCOMPARE(message.link.port, QStringLiteral("COM3"));
+    QCOMPARE(message.link.baud, 115200);
+
+    message = remote::parseClientMessage(R"({"t":"link"})");
     QCOMPARE(message.type, ClientMessageType::Unknown);
 }
 
@@ -530,6 +545,79 @@ void TestRemote::controllerSyncsRemoteInclusion()
     QVERIFY(!failure.isEmpty());
     QCOMPARE(failure.value(QStringLiteral("code")).toString(),
              QStringLiteral("unknown_control"));
+}
+
+void TestRemote::controllerSyncsRemoteLink()
+{
+    const auto port = freePort();
+    QVERIFY(port != 0);
+
+    app::AppController controller;
+    controller.refreshSerialPorts();
+    controller.setRemotePort(port);
+    controller.setRemoteEnabled(true);
+
+    WsClient client;
+    QVERIFY(client.open(port));
+    client.send(QJsonObject {
+        {QStringLiteral("t"), QStringLiteral("hello")},
+        {QStringLiteral("clientId"), QStringLiteral("phone-link")},
+    });
+
+    const auto state = client.waitFor(QStringLiteral("state"));
+    QVERIFY(!state.isEmpty());
+    QVERIFY(state.contains(QStringLiteral("link")));
+    const auto initialLink = state.value(QStringLiteral("link")).toObject();
+    QCOMPARE(initialLink.value(QStringLiteral("kind")).toInt(), 0);
+    QVERIFY(!initialLink.value(QStringLiteral("connected")).toBool());
+
+    // 手机开演示连接：链路状态要推给手机。
+    client.send(QJsonObject {
+        {QStringLiteral("t"), QStringLiteral("link")},
+        {QStringLiteral("cmd"), QStringLiteral("open")},
+        {QStringLiteral("kind"), 4},
+    });
+
+    bool sawDemo = false;
+    bool sawConnected = false;
+    for (int i = 0; i < 5 && !(sawDemo && sawConnected); ++i) {
+        const auto link = client.waitFor(QStringLiteral("link"), 4000);
+        if (link.isEmpty())
+            break;
+        if (link.value(QStringLiteral("kind")).toInt() == 4)
+            sawDemo = true;
+        if (link.value(QStringLiteral("connected")).toBool())
+            sawConnected = true;
+    }
+    QVERIFY2(sawDemo, "open 后应推送 kind=4 的 link");
+    QVERIFY2(sawConnected, "演示连接应立即建立");
+
+    // 已连接时再 open 要被拒绝，不能悄悄切换。
+    client.send(QJsonObject {
+        {QStringLiteral("t"), QStringLiteral("link")},
+        {QStringLiteral("cmd"), QStringLiteral("open")},
+        {QStringLiteral("kind"), 1},
+        {QStringLiteral("host"), QStringLiteral("127.0.0.1")},
+        {QStringLiteral("port"), 1346},
+    });
+    const auto busy = client.waitFor(QStringLiteral("error"));
+    QVERIFY(!busy.isEmpty());
+    QCOMPARE(busy.value(QStringLiteral("code")).toString(), QStringLiteral("link_busy"));
+
+    // 断开后 connected 变回 false。
+    client.send(QJsonObject {
+        {QStringLiteral("t"), QStringLiteral("link")},
+        {QStringLiteral("cmd"), QStringLiteral("close")},
+    });
+    bool sawDisconnected = false;
+    for (int i = 0; i < 5 && !sawDisconnected; ++i) {
+        const auto link = client.waitFor(QStringLiteral("link"), 4000);
+        if (link.isEmpty())
+            break;
+        if (!link.value(QStringLiteral("connected")).toBool())
+            sawDisconnected = true;
+    }
+    QVERIFY2(sawDisconnected, "close 后应推送 disconnected");
 }
 
 void TestRemote::kickDropsTheClient()

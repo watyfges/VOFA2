@@ -91,6 +91,8 @@ signals:
     void actionRequested(quint64 session, quint64 actionId, bool on, bool trigger);
     // Phone toggled "参与一键发送数据" for a slider.
     void inclusionRequested(quint64 session, quint64 controlId, bool included);
+    // Phone drives the connection panel (serial / TCP / UDP / demo).
+    void linkRequested(quint64 session, const remote::LinkCommand& command);
     void oneClickRequested(quint64 session, const QString& group, int intervalMs);
     void oneClickStopRequested(quint64 session);
     void logLine(const QString& text);
